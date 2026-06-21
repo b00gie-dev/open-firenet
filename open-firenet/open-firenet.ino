@@ -87,9 +87,30 @@ bool scanAwaitingGNF  = false;  // true after GET_NETWORKS sent, waiting for sto
 String cachedNetworksMsg;        // last GET_NETWORKS=1 message ready to send
 unsigned long lastProactiveScanMs = 0;  // timestamp of last proactive scan
 
+// Raw protocol logging (Serial only, not webLog — toggled via /raw_log?v=1)
+bool rawLogEnabled = false;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+// dir='R' received from stove, dir='T' transmitted to stove
+// Prints to Serial only — not webLog — so it doesn't flood the web interface.
+void rawLog(char dir, const String& data) {
+  if (!rawLogEnabled) return;
+  unsigned long ms = millis();
+  Serial.print(dir == 'R' ? "[R " : "[T ");
+  Serial.print(ms);
+  Serial.print("] ");
+  for (int i = 0; i < (int)data.length(); i++) {
+    uint8_t c = (uint8_t)data[i];
+    if      (c == '\r') Serial.print("\\r");
+    else if (c == '\n') Serial.print("\\n");
+    else if (c >= 0x20 && c < 0x7F) Serial.print((char)c);
+    else { char b[5]; snprintf(b, sizeof(b), "\\x%02X", c); Serial.print(b); }
+  }
+  Serial.println();
+}
 
 void addLog(const String& msg) {
   unsigned long ms = millis();
@@ -103,6 +124,7 @@ void addLog(const String& msg) {
 }
 
 void sendRaw(const String& msg) {
+  rawLog('T', msg);
   const char* buf = msg.c_str();
   size_t rem = msg.length(), tot = 0;
   while (rem > 0) {
@@ -254,6 +276,23 @@ void sendGetControls() {
   addLog(">>> " + line1 + " / " + line2);
 }
 
+// Named sentinel fields sent with GET_SENSORS so the stove echoes field names back.
+// The stove processes positionally and echoes the sentinel name alongside the value.
+// Confirmed field names from v2 ESP32 firmware decompilation (FUN_42008cf0).
+String buildGetSensors() {
+  return "GET_SENSORS=0; "
+         "sRoomTemp_ACT=0; "
+         "lFlameTemp_ACT=0; "
+         "ulError_ACT=0; "
+         "uiWarning_ACT=0; "
+         "usService_ACT=0; "
+         "uiDischargeMotor_ACT=0; "
+         "ulTotalPelletskg_ACT=0; "
+         "ulTotalOperatingTimeACT_h=0; "
+         "ulTotalStovesACT_h=0; "
+         "=;\n";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Build CDC status fields
 // 20 fields + optionally 3 OTA fields
@@ -292,7 +331,7 @@ String buildFields(bool full, int symbol = -1) {
   s += (full && wifiPass.length()    ? wifiPass    + "\n" : "\n");   // 17 wpa2
   s += (full ? ip  + "\n" : "\n");                        // 18 ip
   s += (full ? mac + "\n" : "\n");                        // 19 mac
-  s += "1\n";                                              // 20 cdc_device
+  s += "0\n";  // 20 update_dialogue (OTA state: 0=NONE/idle; file[0xBDA9] DOMO AVR32)
   return s;
 }
 
@@ -390,9 +429,18 @@ void handleApiStatus() {
 void handleApiSensors() {
   corsHeaders();
   String json = "{";
+  // usMainState name table (DOMO AVR32 file[0xDE29], values 0-7)
+  static const char* const stoveStates[] = {
+    "Standby","Ignit","Start","Regulation","Cleaning","Burnoff","SplitlogChk","Splitlog"
+  };
   for (int i = 0; i < sensorCount; i++) {
     if (i) json += ",";
     json += "\"" + sensors[i].key + "\":\"" + sensors[i].val + "\"";
+    // Expose human-readable stove state alongside raw value
+    if (sensors[i].key == "usMainState") {
+      int st = sensors[i].val.toInt();
+      json += ",\"stoveState\":\"" + String(st >= 0 && st < 8 ? stoveStates[st] : "unknown") + "\"";
+    }
   }
   // Append values received from the stove (POST_CONTROLS parsed positionally)
   if (stoveOnOff >= 0) {
@@ -428,6 +476,35 @@ void handleApiControls() {
                   ",\"tempRoomTarget\":" + String(dc_target) + "}";
     server.send(200, "application/json", json);
   }
+}
+
+void handleSetControls() {
+  corsHeaders();
+  if (server.method() == HTTP_OPTIONS) { server.send(204); return; }
+
+  int dc_onOff, dc_opMode, dc_power, dc_target;
+  parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
+
+  if (server.hasArg("onOff"))          dc_onOff  = server.arg("onOff").toInt();
+  if (server.hasArg("operatingMode"))  dc_opMode = server.arg("operatingMode").toInt();
+  if (server.hasArg("heatingPower"))   dc_power  = server.arg("heatingPower").toInt();
+  if (server.hasArg("tempRoomTarget")) dc_target = server.arg("tempRoomTarget").toInt();
+
+  desiredControls = "onOff=" + String(dc_onOff) +
+                    "; operatingMode=" + String(dc_opMode) +
+                    "; heatingPower=" + String(dc_power) +
+                    "; tempRoomTarget=" + String(dc_target) + ";";
+
+  prefs.putString("ctrl", desiredControls);
+  if (mainLoopActive) { needsRearm = true; pendingControlsWrite = true; }
+  addLog("SET_CTRL: " + desiredControls);
+
+  String json = "{\"ok\":true"
+                ",\"onOff\":"          + String(dc_onOff)  +
+                ",\"operatingMode\":"  + String(dc_opMode)  +
+                ",\"heatingPower\":"   + String(dc_power)   +
+                ",\"tempRoomTarget\":" + String(dc_target)  + "}";
+  server.send(200, "application/json", json);
 }
 
 void handleOtaPage() {
@@ -819,13 +896,7 @@ void drainFor(unsigned long ms) {
     if (USBSerial.available()) {
       USBSerial.setTimeout(50);
       String raw = USBSerial.readStringUntil('\n');
-      // Raw log before any processing (sensor debugging)
-      {
-        String dbg = raw;
-        dbg.replace("\r", "");
-        if (dbg.length() > 0)
-          addLog("RAW: [" + dbg + "]");
-      }
+      rawLog('R', raw);
       while (raw.length() > 0 &&
              (raw[raw.length()-1]=='\r' || raw[raw.length()-1]==';' || raw[raw.length()-1]==' '))
         raw.remove(raw.length()-1);
@@ -910,25 +981,44 @@ void processStoveCommand(const String& raw) {
     }
   }
 
-  // ── Trame POST_SENSORS multi-ligne (champs "=val") ────────────────────────
-  if (pendingPostSensors && raw.length() > 1 && raw[0] == '=') {
-    String val = raw.substring(1); val.trim();
-    if (val.length() > 0 && sensorCount < MAX_SENSORS) {
-      String key = "f" + String(pendingSensorIdx);
-      sensors[sensorCount].key = key;
-      sensors[sensorCount].val = val;
-      sensorCount++;
-      String interp = "";
-      int v = val.toInt();
-      // f0 = sRoomTemp_ACT × 10 (empirically confirmed: 233=23.3°C)
-      if (v > 50 && v < 500) interp = " [" + String(v/10) + "." + String(v%10) + "°C]";
-      addLog("<<< SENSOR f" + String(pendingSensorIdx) + "=" + val + interp);
-      pendingSensorIdx++;
+  // ── Trame POST_SENSORS multi-ligne ───────────────────────────────────────
+  // Handles both named fields (sRoomTemp_ACT=185) and unnamed (=185).
+  // drainFor already strips trailing ';' so =; sentinel arrives as '='.
+  if (pendingPostSensors) {
+    int eq = raw.indexOf('=');
+    if (eq >= 0) {
+      String key = raw.substring(0, eq); key.trim();
+      String val = raw.substring(eq + 1); val.trim();
+      if (val.length() == 0) {
+        pendingPostSensors = false;  // empty sentinel =; → end of sensors
+        return;
+      }
+      if (key.length() == 0) key = "f" + String(pendingSensorIdx);
+      if (sensorCount < MAX_SENSORS) {
+        sensors[sensorCount].key = key;
+        sensors[sensorCount].val = val;
+        sensorCount++;
+        String interp = "";
+        int v = val.toInt();
+        if (key == "sRoomTemp_ACT" && v > 50 && v < 500)
+          interp = " [" + String(v/10) + "." + String(v%10) + "°C]";
+        // usMainState values proven from DOMO AVR32 file[0xDE29]: 0-7
+        else if (key == "usMainState") {
+          const char* st[] = {"Standby","Ignit","Start","Regulation","Cleaning","Burnoff","SplitlogChk","Splitlog"};
+          if (v >= 0 && v < 8) interp = " [" + String(st[v]) + "]";
+        }
+        else if (key == "lFlameTemp_ACT")
+          interp = " [" + String(v) + "°C flame]";
+        else if (key == "ulError_ACT" && v != 0)
+          interp = " [ERROR 0x" + String((unsigned long)v, HEX) + "]";
+        else if (key == "uiWarning_ACT" && v != 0)
+          interp = " [WARN 0x" + String(v, HEX) + "]";
+        addLog("<<< SENSOR " + key + "=" + val + interp);
+        pendingSensorIdx++;
+      }
+      return;
     }
-    return;
-  }
-  if (pendingPostSensors && (raw.length() == 0 || raw[0] != '=')) {
-    pendingPostSensors = false;
+    pendingPostSensors = false;  // non-sensor line → end
   }
 
   // ── Log de la ligne (hors champs POST_SENSORS) ────────────────────────────
@@ -1087,7 +1177,7 @@ void processStoveCommand(const String& raw) {
       sendGetControls();
       delay(50);
       sendStove("GET_REVISION=0; revision=12201; frequency=30; \n");
-      sendStove("GET_SENSORS=0; \n");
+      sendStove(buildGetSensors());
       drainFor(100);
       sendRaw("TRANSFER_COMPLETED\n");
       drainFor(2000);
@@ -1136,10 +1226,11 @@ void setup() {
 
   // ── Charger credentials depuis NVS ────────────────────────────────────────
   prefs.begin("rika", false);
-  wifiSsid  = prefs.getString("ssid",  "");
-  wifiPass  = prefs.getString("pass",  "");
-  stoveId   = prefs.getString("id",    "0000000");
-  stoveToken= prefs.getString("token", "00000000");
+  wifiSsid      = prefs.getString("ssid",   "");
+  wifiPass      = prefs.getString("pass",   "");
+  stoveId       = prefs.getString("id",     "0000000");
+  stoveToken    = prefs.getString("token",  "00000000");
+  rawLogEnabled = prefs.getBool  ("rawlog", false);
 
   // ── Validate stored SSID (must be printable ASCII) ─────────────────────────
   {
@@ -1215,9 +1306,19 @@ void setup() {
   server.on("/api/status",    handleApiStatus);
   server.on("/api/sensors",   handleApiSensors);
   server.on("/api/controls",  handleApiControls);
+  server.on("/set_controls",  handleSetControls);
   server.on("/reset-wifi",    handleResetWifi);
   server.on("/restart",       handleRestart);
   server.on("/update", HTTP_GET, handleOtaPage);
+  server.on("/raw_log", []() {
+    if (server.hasArg("v")) {
+      rawLogEnabled = server.arg("v").toInt() != 0;
+      prefs.putBool("rawlog", rawLogEnabled);
+    }
+    server.send(200, "text/plain",
+      String("raw_log: ") + (rawLogEnabled ? "ON" : "OFF") +
+      "\nUsage: /raw_log?v=1 to enable, /raw_log?v=0 to disable\n");
+  });
   server.on("/update", HTTP_POST,
     []() {
       server.sendHeader("Connection", "close");
@@ -1443,7 +1544,7 @@ void loop() {
     sendGetControls();
     delay(50);
     sendStove("GET_REVISION=0; revision=12201; frequency=30; \n");
-    sendStove("GET_SENSORS=0; \n");
+    sendStove(buildGetSensors());
     drainFor(100);
     sendRaw("TRANSFER_COMPLETED\n");
     drainFor(2000);
@@ -1475,12 +1576,14 @@ void loop() {
   if (USBSerial.available()) {
     USBSerial.setTimeout(50);
     String raw = USBSerial.readStringUntil('\n');
+    rawLog('R', raw);
     while (raw.length() > 0 &&
            (raw[raw.length()-1]=='\r' || raw[raw.length()-1]==';' || raw[raw.length()-1]==' '))
       raw.remove(raw.length()-1);
     processStoveCommand(raw);
     while (USBSerial.available()) {
       String extra = USBSerial.readStringUntil('\n');
+      rawLog('R', extra);
       while (extra.length() > 0 &&
              (extra[extra.length()-1]=='\r' || extra[extra.length()-1]==';' || extra[extra.length()-1]==' '))
         extra.remove(extra.length()-1);

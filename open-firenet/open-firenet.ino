@@ -105,15 +105,19 @@ void addLog(const String& msg) {
 void sendRaw(const String& msg) {
   const char* buf = msg.c_str();
   size_t rem = msg.length(), tot = 0;
-  while (rem > 0) {
+  unsigned long deadline = millis() + 2000;  // 2 s max — evite boucle infinie si CDC fermé
+  while (rem > 0 && millis() < deadline) {
     uint32_t av = tud_cdc_n_write_available(0);
     if (av > 0) {
       uint32_t n = tud_cdc_n_write(0, buf + tot, rem < av ? rem : av);
       tud_cdc_n_write_flush(0);
+      if (n == 0) { delay(1); yield(); continue; }  // write() retourne 0 malgré av>0 : attendre
       tot += n; rem -= n;
     } else delay(1);
     yield();
   }
+  if (rem > 0)
+    addLog("sendRaw: timeout " + String(tot) + "/" + String(msg.length()) + "B sent");
 }
 
 void sendStove(const String& msg) {
@@ -162,6 +166,13 @@ void saveAndConnect(const String& ssidHex, const String& pass,
   if (id.length())    { prefs.putString("id",    id);    stoveId    = id;    }
   if (token.length()) { prefs.putString("token", token); stoveToken = token; }
 
+  // Already connected with same credentials — skip reconnect
+  if (!provisioningMode && ssid == wifiSsid && pass == wifiPass &&
+      WiFi.status() == WL_CONNECTED) {
+    addLog("PROV: same creds + connected → skip reconnect");
+    return;
+  }
+
   wifiSsid    = ssid;
   wifiPass    = pass;
   wifiSsidHex = ssidHex;
@@ -172,8 +183,8 @@ void saveAndConnect(const String& ssidHex, const String& pass,
   WiFi.setAutoReconnect(false);
   wifiRetryDelayMs = 5000;
   wifiNextRetryMs  = 0;
-  WiFi.setTxPower(WIFI_POWER_17dBm);
-  esp_wifi_set_max_tx_power(68);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  esp_wifi_set_max_tx_power(80);
   addLog("WiFi MAC: " + WiFi.macAddress());
   {
     wifi_config_t conf = {};
@@ -184,7 +195,7 @@ void saveAndConnect(const String& ssidHex, const String& pass,
     conf.sta.pmf_cfg.required    = false;
     esp_wifi_set_config(WIFI_IF_STA, &conf);
   }
-  esp_wifi_set_max_tx_power(68);
+  esp_wifi_set_max_tx_power(80);
   // 500ms non-blocking delay before connect (lets WiFi driver settle after stop/start)
   wifiConnectPendingAt = millis() + 500;
 }
@@ -764,7 +775,7 @@ function fetchAll(){
   if(logOpen)fetchLog();
 }
 function copyLog(){var txt=document.getElementById('log').textContent;var el=document.createElement('textarea');el.value=txt;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);}
-setInterval(fetchAll,1500);fetchAll();applyLang();
+setInterval(fetchAll,5000);fetchAll();applyLang();
 </script></body></html>)";
   server.send(200, "text/html", html);
 }
@@ -1180,8 +1191,8 @@ void setup() {
     wifiSsidHex = ssidToHex(wifiSsid);
     addLog("NVS: SSID=\"" + wifiSsid + "\" id=" + stoveId);
 
-    WiFi.setTxPower(WIFI_POWER_17dBm);
-    esp_wifi_set_max_tx_power(68);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    esp_wifi_set_max_tx_power(80);
     {
       wifi_config_t conf = {};
       memcpy(conf.sta.ssid,     wifiSsid.c_str(), min(wifiSsid.length(), (size_t)32));
@@ -1191,7 +1202,7 @@ void setup() {
       conf.sta.pmf_cfg.required    = false;
       esp_wifi_set_config(WIFI_IF_STA, &conf);
     }
-    esp_wifi_set_max_tx_power(68);
+    esp_wifi_set_max_tx_power(80);
     wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
     addLog("WiFi WPA2/WPA3 connect (background): \"" + wifiSsid + "\"");
   } else {
@@ -1257,8 +1268,8 @@ void loop() {
       && wifiNextRetryMs > 0 && now >= wifiNextRetryMs) {
     wifiNextRetryMs = 0;
     addLog("WiFi retry (delay=" + String(wifiRetryDelayMs/1000) + "s) → WPA2/WPA3 connect");
-    WiFi.setTxPower(WIFI_POWER_17dBm);
-    esp_wifi_set_max_tx_power(68);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    esp_wifi_set_max_tx_power(80);
     addLog("WiFi retry MAC: " + WiFi.macAddress());
     {
       wifi_config_t conf = {};
@@ -1269,7 +1280,7 @@ void loop() {
       conf.sta.pmf_cfg.required    = false;
       esp_wifi_set_config(WIFI_IF_STA, &conf);
     }
-    esp_wifi_set_max_tx_power(68);
+    esp_wifi_set_max_tx_power(80);
     wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
   }
   // Deferred connect (500ms after stop/start to let driver settle)
@@ -1342,7 +1353,7 @@ void loop() {
   // CDC keepalive every 5 s — fast scan_command detection
   // Provisioning: POST blank → stove echoes stored credentials → extract
   // Connected   : GET+POST full → stove echoes POST_CDCDEVICE_STATUS with scan_command
-  if (mainLoopActive && rtcSynced && now - lastCDCKeepaliveMs >= 5000) {
+  if (mainLoopActive && rtcSynced && now - lastCDCKeepaliveMs >= 30000) {
     lastCDCKeepaliveMs = now;
     if (provisioningMode) {
       sendPostCDCStatus(false);
@@ -1351,7 +1362,7 @@ void loop() {
       sendGetCDCStatus(true);
       delay(50);
       sendPostCDCStatus(true);
-      drainFor(500);
+      drainFor(200);
     }
   }
 

@@ -585,6 +585,9 @@ tr:last-child td{border-bottom:none}
 pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll;font-size:10.5px;border-radius:9px;line-height:1.55;margin:0}
 .lact{display:flex;justify-content:flex-end;margin-top:8px}
 .bsm{font-size:11px;padding:4px 12px;background:#6c757d;color:#fff;border:none;border-radius:5px;cursor:pointer}
+.bcopy{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;background:#2a2a3d;color:#8ab4f8;border:1px solid #3a3a5c;border-radius:5px;cursor:pointer;transition:background .15s,color .15s}
+.bcopy:hover{background:#3a3a5c;color:#fff}
+.bcopy.copied{background:#1a5c2a;color:#4caf50;border-color:#4caf50}
 </style></head><body>
 <div class='wrap'>
 <header>
@@ -662,7 +665,7 @@ pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll
   </div>
   <div id='logbody'>
     <pre id='log'></pre>
-    <div class='lact'><button class='bsm' onclick='copyLog()' data-i18n='copy'></button></div>
+    <div class='lact'><button class='bcopy' id='copybtn' onclick='copyLog()'><svg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='9' y='9' width='13' height='13' rx='2' ry='2'></rect><path d='M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'></path></svg><span data-i18n='copy'></span></button></div>
   </div>
 </div>
 </div>
@@ -800,7 +803,7 @@ function fetchAll(){
   }).catch(function(){});
   if(logOpen)fetchLog();
 }
-function copyLog(){var txt=document.getElementById('log').textContent;var el=document.createElement('textarea');el.value=txt;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);}
+function copyLog(){var txt=document.getElementById('log').textContent;var btn=document.getElementById('copybtn');var span=btn.querySelector('span');var orig=span.textContent;if(navigator.clipboard){navigator.clipboard.writeText(txt);}else{var el=document.createElement('textarea');el.value=txt;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);}btn.classList.add('copied');span.textContent='✓';setTimeout(function(){btn.classList.remove('copied');span.textContent=orig;},2000);}
 setInterval(fetchAll,5000);fetchAll();applyLang();
 </script></body></html>)";
   server.send(200, "text/html", html);

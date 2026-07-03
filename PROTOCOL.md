@@ -231,7 +231,7 @@ Slot priority: POST_CONTROLS > POST_SENSORS. Each slot is consumed once per cycl
 
 ---
 
-## Keepalive (every 5 s)
+## Keepalive (every 30 s)
 
 **Provisioning mode:**
 ```
@@ -246,7 +246,7 @@ POST_CDCDEVICE_STATUS=0; <full fields, symbol=4>
 ```
 The stove echoes back `POST_CDCDEVICE_STATUS` with its own stored values. **Field 3 (`scan_command`) of that echo** is monitored to detect WiFi scan requests (see WiFi scan flow below).
 
-A 5 s interval provides fast detection of `scan_command=1` while staying well within the 360 s watchdog.
+A 30 s interval stays well within the 360 s watchdog while keeping scan_command detection responsive.
 
 ---
 

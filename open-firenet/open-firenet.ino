@@ -1369,7 +1369,7 @@ void loop() {
     addLog(">>> GET_NETWORKS_FINISHED (init)");
   }
 
-  // CDC keepalive every 5 s — fast scan_command detection
+  // CDC keepalive every 30 s — scan_command detection + stove watchdog (360 s limit)
   // Provisioning: POST blank → stove echoes stored credentials → extract
   // Connected   : GET+POST full → stove echoes POST_CDCDEVICE_STATUS with scan_command
   if (mainLoopActive && rtcSynced && now - lastCDCKeepaliveMs >= 30000) {

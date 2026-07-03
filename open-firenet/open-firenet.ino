@@ -1080,10 +1080,20 @@ void processStoveCommand(const String& raw) {
     return;
   }
 
-  // ── Continuation POST_CONTROLS (=190; = dernier champ tempRoomTarget) ─────
+  // ── Continuation POST_CONTROLS (=180; = tempRoomTarget sur ligne séparée) ──
+  // Roco: envoie seulement l'artefact + la cible → stoveOnOff/opMode/power=-1
+  // On les considère comme "inconnus" mais on sync quand même la cible.
   if (pendingPostControls && raw.length() > 1 && raw[0] == '=') {
     pendingPostControls = false;
     stoveTempTarget = raw.substring(1).toInt();
+    // Sur le Roco, les autres champs ne sont pas transmis — on prend ceux de desiredControls
+    if (stoveOnOff < 0) {
+      int dc_onOff, dc_opMode, dc_power, dc_target;
+      parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
+      stoveOnOff  = dc_onOff;
+      stoveOpMode = dc_opMode;
+      stovePower  = dc_power;
+    }
     addLog("--- Stove controls: onOff=" + String(stoveOnOff) + " opMode=" + String(stoveOpMode) +
            " power=" + String(stovePower) + " target=" + String(stoveTempTarget) + " (=" + String(stoveTempTarget/10) + "." + String(stoveTempTarget%10) + "°C)");
     syncCtrlFromStove();

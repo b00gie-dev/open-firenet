@@ -145,6 +145,25 @@ String hexToSsid(const String& hex) {
   return s;
 }
 
+// Arm the WiFi driver with credentials and schedule a deferred connect (+500 ms).
+// Caller is responsible for updating wifiSsid/wifiPass/wifiSsidHex/provisioningMode first.
+void wifiArm(const String& ssid, const String& pass) {
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  esp_wifi_set_max_tx_power(80);
+  addLog("WiFi MAC: " + WiFi.macAddress());
+  {
+    wifi_config_t conf = {};
+    memcpy(conf.sta.ssid,     ssid.c_str(), min(ssid.length(), (size_t)32));
+    memcpy(conf.sta.password, pass.c_str(), min(pass.length(), (size_t)64));
+    conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
+    conf.sta.pmf_cfg.capable     = true;
+    conf.sta.pmf_cfg.required    = false;
+    esp_wifi_set_config(WIFI_IF_STA, &conf);
+  }
+  // 500 ms non-blocking delay before connect (lets WiFi driver settle after stop/start)
+  wifiConnectPendingAt = millis() + 500;
+}
+
 // Save credentials to persistent storage and start WiFi
 void saveAndConnect(const String& ssidHex, const String& pass,
                     const String& id,      const String& token) {
@@ -184,21 +203,7 @@ void saveAndConnect(const String& ssidHex, const String& pass,
   WiFi.setAutoReconnect(false);
   wifiRetryDelayMs = 5000;
   wifiNextRetryMs  = 0;
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  esp_wifi_set_max_tx_power(80);
-  addLog("WiFi MAC: " + WiFi.macAddress());
-  {
-    wifi_config_t conf = {};
-    memcpy(conf.sta.ssid,     ssid.c_str(), min(ssid.length(), (size_t)32));
-    memcpy(conf.sta.password, pass.c_str(), min(pass.length(), (size_t)64));
-    conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-    conf.sta.pmf_cfg.capable     = true;
-    conf.sta.pmf_cfg.required    = false;
-    esp_wifi_set_config(WIFI_IF_STA, &conf);
-  }
-  esp_wifi_set_max_tx_power(80);
-  // 500ms non-blocking delay before connect (lets WiFi driver settle after stop/start)
-  wifiConnectPendingAt = millis() + 500;
+  wifiArm(ssid, pass);
 }
 
 // Sync desiredControls from values received from the stove (first POST_CONTROLS only)
@@ -1230,20 +1235,8 @@ void setup() {
     wifiSsidHex = ssidToHex(wifiSsid);
     addLog("NVS: SSID=\"" + wifiSsid + "\" id=" + stoveId);
 
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    esp_wifi_set_max_tx_power(80);
-    {
-      wifi_config_t conf = {};
-      memcpy(conf.sta.ssid,     wifiSsid.c_str(), min(wifiSsid.length(), (size_t)32));
-      memcpy(conf.sta.password, wifiPass.c_str(), min(wifiPass.length(), (size_t)64));
-      conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-      conf.sta.pmf_cfg.capable     = true;
-      conf.sta.pmf_cfg.required    = false;
-      esp_wifi_set_config(WIFI_IF_STA, &conf);
-    }
-    esp_wifi_set_max_tx_power(80);
-    wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
     addLog("WiFi WPA2/WPA3 connect (background): \"" + wifiSsid + "\"");
+    wifiArm(wifiSsid, wifiPass);
   } else {
     provisioningMode = true;
     WiFi.persistent(false);
@@ -1307,20 +1300,7 @@ void loop() {
       && wifiNextRetryMs > 0 && now >= wifiNextRetryMs) {
     wifiNextRetryMs = 0;
     addLog("WiFi retry (delay=" + String(wifiRetryDelayMs/1000) + "s) → WPA2/WPA3 connect");
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    esp_wifi_set_max_tx_power(80);
-    addLog("WiFi retry MAC: " + WiFi.macAddress());
-    {
-      wifi_config_t conf = {};
-      memcpy(conf.sta.ssid,     wifiSsid.c_str(), min(wifiSsid.length(), (size_t)32));
-      memcpy(conf.sta.password, wifiPass.c_str(), min(wifiPass.length(), (size_t)64));
-      conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-      conf.sta.pmf_cfg.capable     = true;
-      conf.sta.pmf_cfg.required    = false;
-      esp_wifi_set_config(WIFI_IF_STA, &conf);
-    }
-    esp_wifi_set_max_tx_power(80);
-    wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
+    wifiArm(wifiSsid, wifiPass);
   }
   // Deferred connect (500ms after stop/start to let driver settle)
   if (wifiConnectPendingAt > 0 && now >= wifiConnectPendingAt) {

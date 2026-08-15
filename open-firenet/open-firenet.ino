@@ -38,7 +38,7 @@ bool   provisioningMode = true;   // true until a WiFi SSID is stored
 
 // ── Setpoints sent to the stove ───────────────────────────────────────────────
 // tempRoomTarget is ×10 on the wire (220 = 22.0°C, stove range: 140–280)
-String desiredControls = "onOff=0; operatingMode=1; heatingPower=50; tempRoomTarget=160;";
+String desiredControls = "onOff=0; operatingMode=0; heatingPower=50; tempRoomTarget=160;";
 
 // ── Sensors (POST_SENSORS multi-line) ────────────────────────────────────────
 struct SensorEntry { String key; String val; };
@@ -196,7 +196,7 @@ void syncCtrlFromStove() {
   // Full sync if all fields are available
   if (stoveOnOff >= 0 && stoveOpMode >= 0 && stovePower >= 0) {
     ctrlAutoSynced = true;
-    int syncPower = (stovePower < 50) ? 50 : stovePower;
+    int syncPower = (stovePower < 30) ? 30 : stovePower;
     desiredControls = "onOff=" + String(stoveOnOff) +
                       "; operatingMode=" + String(stoveOpMode) +
                       "; heatingPower=" + String(syncPower) +
@@ -222,7 +222,7 @@ void syncCtrlFromStove() {
 // Parse desiredControls ("onOff=N; operatingMode=N; heatingPower=N; tempRoomTarget=N;")
 // and extract the 4 integer values.
 void parseDesiredControls(int &dc_onOff, int &dc_opMode, int &dc_power, int &dc_target) {
-  dc_onOff = 0; dc_opMode = 1; dc_power = 30; dc_target = 190;
+  dc_onOff = 0; dc_opMode = 0; dc_power = 50; dc_target = 160;
   auto extractField = [&](const char* name) -> int {
     int idx = desiredControls.indexOf(name);
     if (idx < 0) return -1;
@@ -235,7 +235,7 @@ void parseDesiredControls(int &dc_onOff, int &dc_opMode, int &dc_power, int &dc_
   if ((v = extractField("onOff=")) >= 0) dc_onOff = v;
   if ((v = extractField("operatingMode=")) >= 0) dc_opMode = v;
   if ((v = extractField("heatingPower=")) >= 0) dc_power = v;
-  if (dc_power < 50) dc_power = 50;  // lower bound 50%
+  if (dc_power < 30) dc_power = 30;  // lower bound 30%
   if ((v = extractField("tempRoomTarget=")) >= 0) dc_target = v;
 }
 
@@ -626,7 +626,7 @@ pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll
     </div>
   </div>
   <form onsubmit='sendCmd(event)'>
-    <input type='text' id='cmdinput' placeholder='onOff=1; operatingMode=0; heatingPower=50; tempRoomTarget=220;'>
+    <input type='text' id='cmdinput' placeholder='onOff=0; operatingMode=0; heatingPower=50; tempRoomTarget=160;'>
     <button type='submit' class='sbtn' data-i18n='send'></button>
   </form>
 </div>
@@ -642,7 +642,7 @@ pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll
 </div>
 </div>
 <script>
-var ctrlState={onOff:0,operatingMode:0,heatingPower:50,tempRoomTarget:220};
+var ctrlState={onOff:0,operatingMode:0,heatingPower:50,tempRoomTarget:160};
 var logOpen=false,ignoreCtrlUntil=0;
 var isProv=)" + (provisioningMode ? "true" : "false") + R"(;
 var LANG=localStorage.getItem('rika_lang')||'fr';
@@ -681,7 +681,7 @@ function adjTemp(d){
 function adjPow(d){
   fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
     ctrlState=s;
-    var p=Math.max(50,Math.min(100,(ctrlState.heatingPower||50)+d));
+    var p=Math.max(30,Math.min(100,(ctrlState.heatingPower||30)+d));
     var nc='onOff='+ctrlState.onOff+'; operatingMode='+(ctrlState.operatingMode||0)+'; heatingPower='+p+'; tempRoomTarget='+(ctrlState.tempRoomTarget||220)+';';
     fetch('/api/controls',{method:'POST',body:nc}).then(function(){ctrlState.heatingPower=p;ignoreCtrlUntil=Date.now()+2000;fb(t('powset')+p+'%');document.getElementById('pow').textContent=p;});
   });

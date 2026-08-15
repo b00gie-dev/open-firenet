@@ -570,6 +570,7 @@ pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll
   <div class='lang-row'>
     <button class='lbtn' id='lang-fr' onclick='setLang("fr")'>FR</button>
     <button class='lbtn' id='lang-en' onclick='setLang("en")'>EN</button>
+    <button class='lbtn' id='lang-de' onclick='setLang("de")'>DE</button>
   </div>
 </header>
 <div class='card'>
@@ -648,7 +649,8 @@ var isProv=)" + (provisioningMode ? "true" : "false") + R"(;
 var LANG=localStorage.getItem('rika_lang')||'fr';
 var I18N={
   fr:{subtitle:'Contrôle local du poêle',network:'Réseau WiFi',sensors:'Capteurs',control:'Contrôle',start:'Allumer',stop:'Éteindre',temp:'Température',power:'Puissance',mode:'Mode',manual:'Manuel',auto:'Auto',comfort:'Confort',cmd:'Commande directe',send:'Envoyer',resetwifi:'Réinit. WiFi',resetconfirm:'Effacer les credentials WiFi et redémarrer ?',restart:'Redémarrer',restartconfirm:'Redémarrer l\'ESP32 ?',log:'Log',copy:'Copier',setpoints:'Consignes',waiting:'En attente...',stOn:'Allumé',stOff:'Éteint',modeset:'Mode → ',tempset:'Temp → ',powset:'Puissance → ',sent:'✓ Envoyé',sensor_room:'Temp. ambiante',ota:'OTA',provwarn:'Allez dans <strong>Réglages → WiFi</strong> sur l&#39;écran du poêle pour configurer le WiFi.'},
-  en:{subtitle:'Local stove control',network:'WiFi Network',sensors:'Sensors',control:'Control',start:'Start',stop:'Stop',temp:'Temperature',power:'Power',mode:'Mode',manual:'Manual',auto:'Auto',comfort:'Comfort',cmd:'Direct command',send:'Send',resetwifi:'Reset WiFi',resetconfirm:'Clear WiFi credentials and reboot?',restart:'Restart',restartconfirm:'Restart the ESP32?',log:'Log',copy:'Copy',setpoints:'Setpoints',waiting:'Waiting...',stOn:'On',stOff:'Off',modeset:'Mode → ',tempset:'Temp → ',powset:'Power → ',sent:'✓ Sent',sensor_room:'Room temp.',ota:'OTA',provwarn:'Go to <strong>Settings → WiFi</strong> on the stove screen to configure WiFi.'}
+  en:{subtitle:'Local stove control',network:'WiFi Network',sensors:'Sensors',control:'Control',start:'Start',stop:'Stop',temp:'Temperature',power:'Power',mode:'Mode',manual:'Manual',auto:'Auto',comfort:'Comfort',cmd:'Direct command',send:'Send',resetwifi:'Reset WiFi',resetconfirm:'Clear WiFi credentials and reboot?',restart:'Restart',restartconfirm:'Restart the ESP32?',log:'Log',copy:'Copy',setpoints:'Setpoints',waiting:'Waiting...',stOn:'On',stOff:'Off',modeset:'Mode → ',tempset:'Temp → ',powset:'Power → ',sent:'✓ Sent',sensor_room:'Room temp.',ota:'OTA',provwarn:'Go to <strong>Settings → WiFi</strong> on the stove screen to configure WiFi.'},
+  de:{subtitle:'Lokale Ofensteuerung',network:'WLAN Netzwerk',sensors:'Sensoren',control:'Steuerung',start:'Start',stop:'Stop',temp:'Temperatur',power:'Leistung',mode:'Modus',manual:'Manuell',auto:'Auto',comfort:'Komfort',cmd:'Direkter Befehl',send:'Senden',resetwifi:'WLAN zurücksetzen',resetconfirm:'WLAN Zugangsdaten zurücksetzen und Neustart durchführen?',restart:'Neustart',restartconfirm:'ESP32 neu starten?',log:'Log',copy:'Kopieren',setpoints:'Zustände',waiting:'Warte...',stOn:'An',stOff:'Aus',modeset:'Modus → ',tempset:'Temperatur → ',powset:'Leistung → ',sent:'✓ Gesendet',sensor_room:'Raumtemperatur',ota:'OTA',provwarn:'Wechsel zu <strong>Einstellungen → WLAN</strong> auf dem Bildschirm des Ofens um die WLAN-Einstellungen zu ändern.'}
 };
 function t(k){return(I18N[LANG]||I18N.fr)[k]||k;}
 function setLang(l){LANG=l;localStorage.setItem('rika_lang',l);applyLang();}
@@ -662,6 +664,7 @@ function applyLang(){
   if(rsl)rsl.onclick=function(){if(confirm(t('restartconfirm')))fetch('/restart');return false;};
   document.getElementById('lang-fr').className='lbtn'+(LANG==='fr'?' active':'');
   document.getElementById('lang-en').className='lbtn'+(LANG==='en'?' active':'');
+  document.getElementById('lang-de').className='lbtn'+(LANG==='de'?' active':'');
   updateModeButtons();updateStateDisplay();
 }
 

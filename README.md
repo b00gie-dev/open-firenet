@@ -176,12 +176,45 @@ Once connected, open `http://open-firenet.local` in a browser (or use the IP sho
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/status` | GET | JSON: wifi, ip, ssid, provisioning, mainLoop, controls |
-| `/api/sensors` | GET | JSON: sensor fields from POST_SENSORS (f0 = room temp ×10) |
+| `/api/sensors` | GET | JSON: stove sensors + stove controls state + ESP32 system fields (see below) |
 | `/api/controls` | GET | JSON: current setpoints (`onOff`, `operatingMode`, `heatingPower`, `tempRoomTarget`) |
 | `/api/controls` | POST | Set controls — body: `onOff=1; operatingMode=1; heatingPower=50; tempRoomTarget=210;` |
 | `/log` | GET | Plain-text log |
 | `/update` | GET/POST | OTA firmware update page |
 | `/reset-wifi` | GET | Erase WiFi credentials and reboot |
+| `/restart` | GET | Reboot the ESP32 |
+
+### `/api/sensors` response fields
+
+All fields are always present; stove and controls fields are omitted until the first poll cycle completes.
+
+**Stove sensors** (from `POST_SENSORS`):
+
+| Field | Description |
+|---|---|
+| `f0` | Room temperature ×10 — e.g. `213` = 21.3 °C |
+| `f1`–`f12` | Additional stove fields (see [PROTOCOL.md](PROTOCOL.md) for the full positional map) |
+
+**Stove controls state** (from `POST_CONTROLS`, present once the main loop has run at least one poll cycle):
+
+| Field | Description |
+|---|---|
+| `stoveOnOff` | Stove on/off as reported by stove (0 or 1) |
+| `stoveOpMode` | Operating mode as reported by stove (0–3) |
+| `stovePower` | Heating power % as reported by stove |
+| `stoveTempTarget` | Temperature setpoint ×10 as reported by stove |
+
+**ESP32 system fields** (always present):
+
+| Field | Description |
+|---|---|
+| `uptime` | Seconds since boot |
+| `firmware` | Firmware version string |
+| `internalTemp` | ESP32 chip temperature in °C |
+| `rssi` | WiFi signal strength in dBm (when connected) |
+| `mac` | WiFi MAC address (when connected) |
+| `ssid` | Connected SSID (when connected) |
+| `ip` | Bridge IP address (when connected) |
 
 ### Controls format
 ```
@@ -238,28 +271,89 @@ Key facts:
 
 ## Home Assistant
 
-Example REST sensor for room temperature:
+The bridge exposes a local REST API — no cloud, no custom integration needed. Use `rest` sensors and `rest_command` in `configuration.yaml`.
+
+### Sensors
 
 ```yaml
 sensor:
+  # Room temperature from the stove (f0 is ×10)
   - platform: rest
     resource: http://open-firenet.local/api/sensors
     name: Stove room temperature
     value_template: "{{ (value_json.f0 | int / 10) | round(1) }}"
     unit_of_measurement: "°C"
-    scan_interval: 60
+    device_class: temperature
+    scan_interval: 30
 
+  # Stove on/off state as reported by the stove
+  - platform: rest
+    resource: http://open-firenet.local/api/sensors
+    name: Stove state
+    value_template: "{{ value_json.stoveOnOff }}"
+    scan_interval: 30
+
+  # Current temperature setpoint (×10 → °C)
+  - platform: rest
+    resource: http://open-firenet.local/api/sensors
+    name: Stove temperature setpoint
+    value_template: "{{ (value_json.stoveTempTarget | int / 10) | round(1) }}"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    scan_interval: 30
+
+  # Heating power %
+  - platform: rest
+    resource: http://open-firenet.local/api/sensors
+    name: Stove heating power
+    value_template: "{{ value_json.stovePower }}"
+    unit_of_measurement: "%"
+    scan_interval: 30
+
+  # Bridge WiFi signal
+  - platform: rest
+    resource: http://open-firenet.local/api/sensors
+    name: Open Firenet RSSI
+    value_template: "{{ value_json.rssi }}"
+    unit_of_measurement: "dBm"
+    device_class: signal_strength
+    scan_interval: 60
+```
+
+### Commands
+
+```yaml
 rest_command:
   rika_start:
     url: "http://open-firenet.local/api/controls"
     method: POST
     payload: "onOff=1; operatingMode=1; heatingPower=50; tempRoomTarget=210;"
     content_type: text/plain
+
   rika_stop:
     url: "http://open-firenet.local/api/controls"
     method: POST
     payload: "onOff=0; operatingMode=1; heatingPower=50; tempRoomTarget=210;"
     content_type: text/plain
+
+  rika_set_temp:
+    url: "http://open-firenet.local/api/controls"
+    method: POST
+    # tempRoomTarget is ×10 — pass 210 for 21.0 °C
+    payload: "onOff=1; operatingMode=2; heatingPower=50; tempRoomTarget={{ (temp | float * 10) | int }};"
+    content_type: text/plain
+```
+
+### Automation example
+
+```yaml
+automation:
+  - alias: Turn off stove at night
+    trigger:
+      - platform: time
+        at: "22:00:00"
+    action:
+      - service: rest_command.rika_stop
 ```
 
 ---

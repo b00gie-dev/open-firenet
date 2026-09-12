@@ -24,6 +24,7 @@
 #define RIKA_PID       0x819A
 #define NTP_SERVER     "pool.ntp.org"
 #define LOG_MAX_CHARS  32768
+#define FIRMWARE_VERSION "1.0.0"
 
 Preferences prefs;
 USBCDC      USBSerial;
@@ -394,13 +395,26 @@ void handleApiSensors() {
     if (i) json += ",";
     json += "\"" + sensors[i].key + "\":\"" + sensors[i].val + "\"";
   }
-  // Append values received from the stove (POST_CONTROLS parsed positionally)
+  // Stove controls state (POST_CONTROLS)
   if (stoveOnOff >= 0) {
     if (sensorCount) json += ",";
-    json += "\"stoveOnOff\":\"" + String(stoveOnOff) + "\"";
-    json += ",\"stoveOpMode\":\"" + String(stoveOpMode) + "\"";
-    json += ",\"stovePower\":\"" + String(stovePower) + "\"";
-    json += ",\"stoveTempTarget\":\"" + String(stoveTempTarget) + "\"";
+    json += "\"stoveOnOff\":" + String(stoveOnOff);
+    json += ",\"stoveOpMode\":" + String(stoveOpMode);
+    json += ",\"stovePower\":" + String(stovePower);
+    json += ",\"stoveTempTarget\":" + String(stoveTempTarget);
+  }
+  // ESP32 system sensors
+  bool needComma = sensorCount || stoveOnOff >= 0;
+  if (needComma) json += ",";
+  json += "\"uptime\":" + String(millis() / 1000);
+  json += ",\"firmware\":\"" FIRMWARE_VERSION "\"";
+  float intTemp = temperatureRead();
+  json += ",\"internalTemp\":" + String(intTemp, 1);
+  if (WiFi.status() == WL_CONNECTED) {
+    json += ",\"mac\":\"" + WiFi.macAddress() + "\"";
+    json += ",\"rssi\":" + String(WiFi.RSSI());
+    json += ",\"ssid\":\"" + wifiSsid + "\"";
+    json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
   }
   json += "}";
   server.send(200, "application/json", json);
@@ -747,11 +761,23 @@ function sendCmd(e){
 }
 function fetchAll(){
   fetch('/api/sensors').then(function(r){return r.json();}).then(function(d){
-    var rows='<table><tr><th>'+t('sensors')+'</th><th></th></tr>';
-    if(d.f0!==undefined){var v0=parseInt(d.f0);rows+='<tr><td>'+t('sensor_room')+'</td><td>'+(v0>0?(v0/10).toFixed(1)+'°C':'–')+'</td></tr>';}
-    for(var k in d){if(k==='f0')continue;var v=parseInt(d[k]);var disp=(v>0&&v<5000)?((v/10).toFixed(1)+'°C'):(d[k]);rows+='<tr><td>'+k+'</td><td>'+disp+'</td></tr>';}
+    var STOVE_SKIP={'rssi':1,'ip':1,'mac':1,'ssid':1,'firmware':1,'uptime':1,'internalTemp':1,'stoveOnOff':1,'stoveOpMode':1,'stovePower':1,'stoveTempTarget':1};
+    var rows='<table>';
+    // System sensors (always shown)
+    var uptime=d.uptime!==undefined?d.uptime:0;
+    var uh=Math.floor(uptime/3600),um=Math.floor((uptime%3600)/60),us=uptime%60;
+    var uptimeStr=(uh?uh+'h ':'')+(um?um+'m ':'')+us+'s';
+    rows+='<tr><td style="color:#aaa;font-size:11px;padding-top:10px" colspan="2">ESP32</td></tr>';
+    if(d.internalTemp!==undefined) rows+='<tr><td>Temp. chip</td><td>'+Number(d.internalTemp).toFixed(1)+'°C</td></tr>';
+    if(d.rssi!==undefined)         rows+='<tr><td>WiFi RSSI</td><td>'+d.rssi+' dBm</td></tr>';
+    if(d.uptime!==undefined)       rows+='<tr><td>Uptime</td><td>'+uptimeStr+'</td></tr>';
+    if(d.firmware!==undefined)     rows+='<tr><td>Firmware</td><td>'+d.firmware+'</td></tr>';
+    // Stove sensors (f0, f1... from POST_SENSORS)
+    var stoveRows=0;
+    if(d.f0!==undefined){var v0=parseInt(d.f0);rows+='<tr><td style="color:#aaa;font-size:11px;padding-top:10px" colspan="2">'+t('sensors')+'</td></tr>';rows+='<tr><td>'+t('sensor_room')+'</td><td>'+(v0>0?(v0/10).toFixed(1)+'°C':'–')+'</td></tr>';stoveRows++;}
+    for(var k in d){if(k==='f0'||STOVE_SKIP[k])continue;var v=parseInt(d[k]);var disp=(v>0&&v<5000&&String(d[k]).indexOf('.')<0)?((v/10).toFixed(1)+'°C'):(d[k]);rows+='<tr><td>'+k+'</td><td>'+disp+'</td></tr>';stoveRows++;}
     rows+='</table>';
-    document.getElementById('sensors').innerHTML=Object.keys(d).length?rows:'<em style="color:#ccc;font-size:13px">'+t('waiting')+'</em>';
+    document.getElementById('sensors').innerHTML=rows;
   }).catch(function(){});
   fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
     if(Date.now()>ignoreCtrlUntil){
@@ -760,7 +786,7 @@ function fetchAll(){
       document.getElementById('ctrl').textContent=disp;
       updateDisplay();
     }
-  });
+  }).catch(function(){});
   if(logOpen)fetchLog();
 }
 function copyLog(){var txt=document.getElementById('log').textContent;var el=document.createElement('textarea');el.value=txt;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);}

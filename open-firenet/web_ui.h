@@ -353,6 +353,15 @@ input[type=range]::-webkit-slider-thumb {
 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+.log-console {
+  background: #0a0d14; border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.78rem; line-height: 1.5; max-height: 60vh; overflow: auto;
+  white-space: pre-wrap; word-break: break-all; color: var(--text-muted);
+}
+.log-console .rx { color: var(--blue); }
+.log-console .tx { color: var(--green); }
+.log-console .ts { color: var(--text-muted); }
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -548,6 +557,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     <button class="tab-btn active" id="tabBtnTelemetry" onclick="showTab('tab-telemetry')">📊 Télémétrie complète</button>
     <button class="tab-btn" id="tabBtnNetwork" onclick="showTab('tab-network')">📶 Réseau & WiFi</button>
     <button class="tab-btn" id="tabBtnLink" onclick="showTab('tab-link')">⚙️ Liaison CDC</button>
+    <button class="tab-btn" id="tabBtnLogs" onclick="showTab('tab-logs')">📜 Logs CDC</button>
   </div>
 
   <!-- Tab 1: Telemetry -->
@@ -610,6 +620,25 @@ tr:hover td { background: rgba(255,255,255,0.02); }
       </table>
     </div>
   </div>
+
+  <!-- Tab 4: CDC Logs -->
+  <div class="tab-content" id="tab-logs">
+    <div class="card" style="padding:14px;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="font-size:0.85rem">
+          <span style="color:var(--blue)">■</span> <span id="lblLogRx">Poêle → Clef (RX)</span>
+          &nbsp;&nbsp;
+          <span style="color:var(--green)">■</span> <span id="lblLogTx">Clef → Poêle (TX)</span>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center">
+          <label style="font-size:0.8rem;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="logAuto" checked> <span id="lblLogAuto">Auto</span></label>
+          <button class="btn-lang" id="btnLogDownload" style="padding:4px 10px;font-size:0.8rem" onclick="downloadLog()">⬇ Télécharger</button>
+          <button class="btn-lang" id="btnLogClear" style="padding:4px 10px;font-size:0.8rem" onclick="clearLog()">Effacer</button>
+        </div>
+      </div>
+      <pre id="logConsole" class="log-console">…</pre>
+    </div>
+  </div>
 </main>
 <div class="toast" id="toast"></div>
 
@@ -660,6 +689,12 @@ const I18N = {
     tabTelemetry: "📊 Télémétrie complète",
     tabNetwork: "📶 Réseau & WiFi",
     tabLink: "⚙️ Liaison CDC",
+    tabLogs: "📜 Logs CDC",
+    logRx: "Poêle → Clef (RX)",
+    logTx: "Clef → Poêle (TX)",
+    logAuto: "Auto",
+    logDownload: "⬇ Télécharger",
+    logClear: "Effacer",
     sensorSearchPlaceholder: "🔍 Filtrer les 53 capteurs...",
     thSensorName: "Capteur",
     thSensorId: "Identifiant",
@@ -772,6 +807,12 @@ const I18N = {
     tabTelemetry: "📊 Full Telemetry",
     tabNetwork: "📶 Network & WiFi",
     tabLink: "⚙️ USB CDC Link",
+    tabLogs: "📜 CDC Logs",
+    logRx: "Stove → Dongle (RX)",
+    logTx: "Dongle → Stove (TX)",
+    logAuto: "Auto",
+    logDownload: "⬇ Download",
+    logClear: "Clear",
     sensorSearchPlaceholder: "🔍 Filter 53 sensors...",
     thSensorName: "Sensor",
     thSensorId: "Internal ID",
@@ -876,6 +917,12 @@ function applyLang() {
   document.getElementById('tabBtnTelemetry').textContent = t.tabTelemetry;
   document.getElementById('tabBtnNetwork').textContent = t.tabNetwork;
   document.getElementById('tabBtnLink').textContent = t.tabLink;
+  document.getElementById('tabBtnLogs').textContent = t.tabLogs;
+  document.getElementById('lblLogRx').textContent = t.logRx;
+  document.getElementById('lblLogTx').textContent = t.logTx;
+  document.getElementById('lblLogAuto').textContent = t.logAuto;
+  document.getElementById('btnLogDownload').textContent = t.logDownload;
+  document.getElementById('btnLogClear').textContent = t.logClear;
   document.getElementById('sensorSearch').placeholder = t.sensorSearchPlaceholder;
   document.getElementById('thSensorName').textContent = t.thSensorName;
   document.getElementById('thSensorId').textContent = t.thSensorId;
@@ -918,13 +965,61 @@ function toast(msg) {
 function showTab(id) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  const btn = document.getElementById(id === 'tab-network' ? 'tabBtnNetwork' : (id === 'tab-link' ? 'tabBtnLink' : 'tabBtnTelemetry'));
+  const btnMap = {'tab-network':'tabBtnNetwork','tab-link':'tabBtnLink','tab-logs':'tabBtnLogs','tab-telemetry':'tabBtnTelemetry'};
+  const btn = document.getElementById(btnMap[id] || 'tabBtnTelemetry');
   if (btn) btn.classList.add('active');
   const tab = document.getElementById(id);
   if (tab) tab.classList.add('active');
   if (id === 'tab-network' && document.getElementById('ssidSelect').options.length <= 1) {
     scanWifi();
   }
+  if (id === 'tab-logs') fetchLogs();
+}
+
+// --- Logs CDC : /log renvoie des lignes "[millis][rx|tx] contenu" ------------
+async function fetchLogs() {
+  const tab = document.getElementById('tab-logs');
+  if (!tab || !tab.classList.contains('active')) return;
+  if (!document.getElementById('logAuto').checked) return;
+  try {
+    const r = await fetch('/log');
+    const txt = await r.text();
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Regroupe les trames multi-lignes en UNE entrée : le contenu d'une trame
+    // (ex. POST_CDCDEVICE_STATUS) contient des \n ; on réassemble ses champs
+    // avec " · " au lieu d'exploser en lignes de chiffres.
+    const entries = [];
+    for (const line of txt.split('\n')) {
+      const m = line.match(/^\[(\d+)\]\[(rx|tx)\]\s?(.*)$/);
+      if (m) entries.push({ts: m[1], dir: m[2], parts: [m[3]]});
+      else if (entries.length && line !== '') entries[entries.length - 1].parts.push(line);
+    }
+    const html = entries.map(e => {
+      const tag = e.dir === 'rx' ? 'RX' : 'TX';
+      const payload = e.parts.filter(p => p.trim() !== '').join(' · ');
+      return '<span class="ts">[' + e.ts + ']</span> ' +
+             '<span class="' + e.dir + '"><b>' + tag + '</b>  ' + esc(payload) + '</span>';
+    }).join('\n');
+    const el = document.getElementById('logConsole');
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = html || '(vide)';
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch (e) { /* silencieux */ }
+}
+function clearLog() { document.getElementById('logConsole').innerHTML = '(effacé, en attente…)'; }
+async function downloadLog() {
+  try {
+    const txt = await (await fetch('/log')).text();
+    const pad = n => String(n).padStart(2, '0');
+    const d = new Date();
+    const name = 'open-firenet-log-' + d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate())
+               + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.txt';
+    const url = URL.createObjectURL(new Blob([txt], {type: 'text/plain'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) { /* silencieux */ }
 }
 
 function setInteracting() {
@@ -1204,6 +1299,7 @@ async function tick() {
 
 applyLang();
 setInterval(tick, 2000);
+setInterval(fetchLogs, 1500);
 tick();
 </script>
 </body>

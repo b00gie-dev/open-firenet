@@ -130,17 +130,23 @@ Then inside WSL:
 
 ## First boot — WiFi provisioning
 
-On first boot the bridge has no WiFi credentials and enters **provisioning mode**.
+On first boot (or if credentials were reset), the bridge enters **provisioning mode** with its own Wi-Fi Access Point: **`Open-Firenet-Setup`** (open network, no password).
 
-Two ways to provision:
+Three ways to provision:
 
-### Option A — Stove screen (no PC needed)
-1. On the stove, go to **Settings → WiFi** and select your network.
-2. The stove sends the credentials over USB CDC to the bridge.
-3. The bridge connects and shows a connected icon on the stove screen.
+### Option A — Captive Portal (smartphone or PC, recommended)
+1. Connect your phone or laptop to the Wi-Fi network **`Open-Firenet-Setup`**.
+2. The captive portal opens automatically (or browse to `http://open-firenet.local` or `http://192.168.4.1`).
+3. Select your 2.4 GHz home Wi-Fi from the scanned networks list, enter your Wi-Fi password, and click **Enregistrer / Connect**.
+4. The dongle reboots, connects to your LAN, and becomes available at **`http://open-firenet.local`**.
 
-### Option B — Serial command (useful for testing)
-Send via the serial port (`/dev/ttyACM0`, 115200 baud):
+### Option B — Stove screen (no smartphone needed)
+1. On the stove panel, navigate to **Settings → WiFi** and select your network.
+2. The stove transmits credentials over the USB CDC link to the bridge.
+3. The bridge connects and displays the connected icon on the stove screen.
+
+### Option C — Serial command (for lab / debugging)
+Connect to the ESP32-S3 serial port (`115200 baud`):
 ```
 SETWIFI:YourSSID:YourPassword
 ```
@@ -149,118 +155,103 @@ SETWIFI:YourSSID:YourPassword
 
 ## Web interface
 
-Once connected, open `http://open-firenet.local` in a browser (or use the IP shown in the serial log).
+Once connected, open **`http://open-firenet.local`** in any web browser (or use the device IP assigned by your router).
 
-<p align="center">
-  <img src="assets/ui-desktop.png" alt="Web UI — desktop" width="600">
-  <img src="assets/ui-mobile.png" alt="Web UI — mobile" width="220">
-</p>
-
-- **FR / EN** language toggle in the header
-- **Start / Stop** — disabled when the stove is already in that state
-- **Temperature** slider — shown in Comfort mode only
-- **Power** slider — shown in Manual and Auto modes
-- **Mode** — Manuel / Auto / Confort (operatingMode 0 / 1 / 2)
-- **Log** — collapsible, shows the live CDC protocol log
-
-<p align="center">
-  <img src="assets/ui-mobile-log.png" alt="Web UI — log open" width="220">
-</p>
-
-- **OTA** — firmware update via browser at `/update`
+- **Language selector with flags**: 🇫🇷 Français / 🇬🇧 English dropdown in the header.
+- **Glassmorphism dark UI**: responsive for mobile and desktop screens.
+- **Live stove status**: operational state (Standby, Ignition, Start, Regulation, Cleaning, Burnoff, Splitlog), room temperature, flame temperature, Wi-Fi signal strength.
+- **Interactive controls**:
+  - Power **ON / OFF** toggle
+  - **Operating Mode**: Manuel, Auto (Thermostat), Confort, Réduit (Setback)
+  - **Target Room Temperature**: slider 14.0°C – 28.0°C (in Confort mode)
+  - **Heating Power**: slider 30% – 100% (in Manuel / Auto modes)
+- **Live CDC Link Log**: collapsible console streaming USB CDC communication with the stove.
+- **Restart button**: reboot the ESP32 bridge directly from the UI without unplugging.
 
 ---
 
-## REST API
+## REST API V2
+
+Open-Firenet V2 provides a clean, unified REST JSON API with natural units (temperatures in °C as floats, power as percentage integers, clean mode strings):
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/status` | GET | JSON: wifi, ip, ssid, provisioning, mainLoop, controls |
-| `/api/sensors` | GET | JSON: sensor fields from POST_SENSORS (f0 = room temp ×10) |
-| `/api/controls` | GET | JSON: current setpoints (`onOff`, `operatingMode`, `heatingPower`, `tempRoomTarget`) |
-| `/api/controls` | POST | Set controls — body: `onOff=1; operatingMode=1; heatingPower=50; tempRoomTarget=210;` |
-| `/log` | GET | Plain-text log |
-| `/update` | GET/POST | OTA firmware update page |
-| `/reset-wifi` | GET | Erase WiFi credentials and reboot |
+| `/api/state` | GET | **V2 Unified state**: device info, stove state, sensors, controls |
+| `/api/controls` | POST | **V2 Set controls**: accepts clean JSON payload (partial updates supported) |
+| `/api/restart` | POST | Software restart of the ESP32 bridge |
+| `/api/status` | GET | *Legacy* status endpoint (retained for backward compatibility) |
+| `/api/sensors` | GET | *Legacy* sensors endpoint (retained for backward compatibility) |
+| `/api/controls` | GET | Current controls in JSON format |
+| `/reset-wifi` | GET / POST | Erase Wi-Fi credentials from NVS and reboot into provisioning AP |
+| `/log` | GET | Plain-text live USB CDC debug log |
 
-### Controls format
+### `GET /api/state` example
+
+```json
+{
+  "device": {
+    "status": "connected",
+    "rssi": -62,
+    "ip": "192.168.1.93",
+    "mac": "84:FC:E6:XX:XX:XX",
+    "uptime_ms": 348210
+  },
+  "stove": {
+    "online": true,
+    "state": "regulation",
+    "state_code": 3,
+    "igniter_on": false,
+    "error_mask": 0,
+    "warning_mask": 0
+  },
+  "sensors": {
+    "room_temperature": 20.4,
+    "flame_temperature": 412.0
+  },
+  "controls": {
+    "on": true,
+    "mode": "comfort",
+    "power_percent": 70,
+    "target_temperature": 21.0
+  }
+}
 ```
-onOff=<0|1>; operatingMode=<0|1|2>; heatingPower=<50-100>; tempRoomTarget=<140-280>;
-```
-`tempRoomTarget` is ×10 (210 = 21.0 °C). `heatingPower` is % (50–100, values below 50 are clamped to 50).
 
-### Operating modes
-| Value | Mode |
-|---|---|
-| 0 | Manual (fixed power %) |
-| 1 | Auto / thermostat |
-| 2 | Comfort |
+### `POST /api/controls` example
 
-### API Explorer
-
-`docs/api-explorer.html` is a standalone browser-based tool for exploring the API against your running bridge.
-
-<p align="center">
-  <img src="assets/api-explorer-overview.png" alt="API Explorer — overview" width="700">
-  <img src="assets/api-explorer-response.png" alt="API Explorer — response" width="700">
-</p>
-
-Open it from the repo (no server needed — it runs entirely in the browser):
+Send a JSON object with `Content-Type: application/json`. Partial updates are fully supported:
 
 ```bash
-open docs/api-explorer.html       # macOS
-xdg-open docs/api-explorer.html   # Linux
+# Set target temperature to 21.0 °C in Comfort mode
+curl -X POST http://open-firenet.local/api/controls \
+  -H "Content-Type: application/json" \
+  -d '{"target_temperature": 21.0, "mode": "comfort"}'
+
+# Turn the stove ON at 80% power
+curl -X POST http://open-firenet.local/api/controls \
+  -H "Content-Type: application/json" \
+  -d '{"on": true, "power_percent": 80}'
 ```
 
-Or, if the repo is published on GitHub Pages, the explorer is available at:
-```
-https://<your-org>.github.io/<repo>/docs/api-explorer.html
-```
-
-Enter your bridge address (`http://open-firenet.local` or the IP) in the host field at the top. The explorer checks connectivity on load and shows latency. Each endpoint has a collapsible panel with a **Run** button — the POST controls panel includes form fields for all setpoints.
-
-> **Note:** The bridge serves CORS headers (`Access-Control-Allow-Origin: *`) so the explorer can reach it from any origin, including `file://`.
+Supported fields:
+- `on`: boolean (`true` or `false`)
+- `mode`: string (`"manual"`, `"auto"`, `"comfort"`, `"setback"`)
+- `power_percent`: integer (`30` – `100`)
+- `target_temperature`: float in °C (`14.0` – `28.0`)
 
 ---
 
-## Protocol
+## Home Assistant Integration
 
-See [PROTOCOL.md](PROTOCOL.md) for the full reverse-engineered USB CDC protocol specification.
+For Home Assistant, use the official custom integration repository:  
+**[openfirenet/open-firenet-ha](https://github.com/openfirenet/open-firenet-ha)**
 
-Key facts:
-- ASCII line-oriented over USB CDC
-- Stove is USB host, dongle is USB device
-- All commands terminated with `\n` or `\r\n`
-- `tempRoomTarget` is always ×10 on the wire
-- `POST_CONTROLS` does not reflect the values just written — it returns the stove's own stored values
-
----
-
-## Home Assistant
-
-Example REST sensor for room temperature:
-
-```yaml
-sensor:
-  - platform: rest
-    resource: http://open-firenet.local/api/sensors
-    name: Stove room temperature
-    value_template: "{{ (value_json.f0 | int / 10) | round(1) }}"
-    unit_of_measurement: "°C"
-    scan_interval: 60
-
-rest_command:
-  rika_start:
-    url: "http://open-firenet.local/api/controls"
-    method: POST
-    payload: "onOff=1; operatingMode=1; heatingPower=50; tempRoomTarget=210;"
-    content_type: text/plain
-  rika_stop:
-    url: "http://open-firenet.local/api/controls"
-    method: POST
-    payload: "onOff=0; operatingMode=1; heatingPower=50; tempRoomTarget=210;"
-    content_type: text/plain
-```
+Features:
+- Single-step setup via UI Config Flow (enter `http://open-firenet.local` or IP)
+- Native **Climate** entity (`climate.stove`) with target temperature, presets (`manual`, `auto`, `comfort`, `setback`), and fan power
+- **11 native sensor entities**: room temperature, flame temperature, operational state, sub-state, Wi-Fi RSSI, runtime, pellet consumption, error masks
+- **Binary sensors**: Stove connection, combustion active, error status
+- Real-time updates via asynchronous polling of the V2 API without cloud lag
 
 ---
 

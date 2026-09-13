@@ -1,1593 +1,967 @@
-/*
- * RIKA Firenet 2.0 Bridge — ESP32-S3
- *
- * First boot: the user configures WiFi from the stove screen.
- * The stove sends credentials to the dongle (USB CDC); the dongle saves them
- * to persistent storage and connects. No credentials are compiled in.
- *
- * CDC protocol (ASCII, \n) — confirmed against DOMO v2.29.585.12 binary + live logs.
- */
+// open-firenet.ino — Open-Firenet pour ESP32-S3 (reverse-engineering).
+//
+// Rôle : se substituer au dongle officiel. L'ESP32 est DEVICE USB CDC branché sur
+// le poêle (hôte USB) et joue à la fois le dongle ET le serveur local Open-Firenet :
+// il interroge le poêle en CDC, expose l'état par une interface web + API REST,
+// et applique les consignes reçues. Toute la logique protocole prouvée est dans
+// firenet_protocol.h / firenet_link.h (testés en g++).
+//
+// Carte : ESP32-S3. FQBN : esp32:esp32:esp32s3 avec USBMode=default (TinyUSB) et
+// CDCOnBoot=cdc. Les logs de debug sortent sur UART0 (Serial0 / port COM/CH343).
+//
+// USB : VID 0x303A / PID 0x819A.
 
-#include "USB.h"
-#include "USBCDC.h"
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
-#include "esp_sntp.h"
-#include "esp_wifi.h"
-#include "class/cdc/cdc_device.h"
-#include <Update.h>
+#include <ESPmDNS.h>
+#include <DNSServer.h>
+#include "USB.h"
+#include "USBCDC.h"
+#include "tusb.h"   // écriture CDC directe, sans la condition DTR d'Arduino
+#include "esp_wifi.h"  // connexion STA robuste (méthode open-firenet, coexistence USB)
+#include "firenet_link.h"
+#include "web_ui.h"
 
-#define RIKA_VID       0x303A
-#define RIKA_PID       0x819A
-#define NTP_SERVER     "pool.ntp.org"
-#define LOG_MAX_CHARS  32768
+// Avec CDCOnBoot=default (désactivé), le core ne démarre pas l'USB de lui-même :
+// on instancie le CDC et on fixe VID/PID AVANT USB.begin(). Serial = UART0 (debug).
+USBCDC USBSerial;
 
+// ----------------------------------------------------------------- config USB
+// Identifiants USB Open-Firenet
+#define OPENFIRENET_USB_VID 0x303A
+#define OPENFIRENET_USB_PID 0x819A
+
+// USBSerial = CDC TinyUSB (lien poêle) ; DBG = UART0 (port COM/CH343, logs).
+#define DBG Serial
+#define POELE USBSerial
+
+// --------------------------------------------------------------- WiFi / état
 Preferences prefs;
-USBCDC      USBSerial;
-WebServer   server(80);
-String      webLog;
+WebServer   web(80);
+DNSServer   dnsServer;
+String      wifiSsid, wifiPass, apPass;
+static uint32_t g_wifiConnectAt = 0;   // connect STA différé (méthode open-firenet)
+static bool     g_isApMode = false;
+static bool     g_staConnected = false;
+static uint32_t g_staStart = 0;
+bool        writeEnabled = true;    // Open-Firenet : consignes actives directement
 
-// ── Credentials (stored in ESP32 NVS, never hard-coded) ──────────────────────
-String wifiSsid, wifiPass, wifiSsidHex;
-String stoveId   = "0000000";
-String stoveToken = "00000000";
-bool   provisioningMode = true;   // true until a WiFi SSID is stored
-
-// ── Setpoints sent to the stove ───────────────────────────────────────────────
-// tempRoomTarget is ×10 on the wire (220 = 22.0°C, stove range: 140–280)
-String desiredControls = "onOff=0; operatingMode=1; heatingPower=50; tempRoomTarget=160;";
-
-// ── Sensors (POST_SENSORS multi-line) ────────────────────────────────────────
-struct SensorEntry { String key; String val; };
-#define MAX_SENSORS 32
-SensorEntry sensors[MAX_SENSORS];
-int  sensorCount = 0;
-String lastSensorsRaw, lastControlsRaw;
-
-// ── Protocol state ────────────────────────────────────────────────────────────
-bool mainLoopActive = false, phase2Done = false;
-bool rtcSynced = false, ntpDone = false;
-bool needsRearm = false, pollInProgress = false, pendingControlsWrite = true;
-bool pendingPostControls = false;
-int  postControlsPos = 0;  // positional index in POST_CONTROLS (shifted format, artefact filtered)
-// Values received from the stove via POST_CONTROLS (pos 2=onOff, 3=opMode, 4=power, 5=target)
-int stoveOnOff = -1, stoveOpMode = -1, stovePower = -1, stoveTempTarget = -1;
-bool ctrlAutoSynced = false;  // first POST_CONTROLS → auto-sync desiredControls
-// WiFi reconnect backoff (avoids flooding the AP with auth requests)
-unsigned long wifiNextRetryMs = 0;
-unsigned long wifiRetryDelayMs = 5000;  // 5s → 10s → 20s → ... → 600s max
-unsigned long wifiConnectPendingAt = 0;  // if >0: call esp_wifi_connect() when millis()>=this value
-bool serverStarted = false;
-unsigned long lastHeartbeatMs = 0, phase1SentAt = 0;
-unsigned long phase2GetSentAt = 0, phase2EchoAt = 0;
-unsigned long lastPollMs = 0, lastSensorPollMs = 0, lastCDCKeepaliveMs = 0;
-int phase1EchoCount = 0;
-
-// ── Incoming GET_CDCDEVICE_STATUS stove→dongle (WiFi provisioning) ───────────
-// The stove sends this frame after the user enters SSID+WPA2
-// on the stove screen (scan_command or init_command field).
-bool   pendingCredFrame = false;
-int    credFieldIdx     = 0;
-String credSsidHex, credWpa2, credId, credToken;
-
-// ── Parsing POST_CDCDEVICE_STATUS echo from stove (Phase 1 + keepalive) ──────
-bool   parsePh1Echo = false;
-int    ph1FieldIdx  = 0;
-String ph1SsidHex, ph1Wpa2, ph1Id, ph1Token;
-bool   pendingPostSensors = false;
-int    pendingSensorIdx   = 0;
-
-// ── WiFi scan (triggered by scan_command=1 in the stove echo) ────────────────
-bool scanRequested    = false;
-bool scanBusy         = false;
-bool scanAwaitingGNF  = false;  // true after GET_NETWORKS sent, waiting for stove GNF to send sym=7
-String cachedNetworksMsg;        // last GET_NETWORKS=1 message ready to send
-unsigned long lastProactiveScanMs = 0;  // timestamp of last proactive scan
-
-// Raw protocol logging (Serial only, not webLog — toggled via /raw_log?v=1)
-bool rawLogEnabled = false;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// dir='R' received from stove, dir='T' transmitted to stove
-// Prints to Serial only — not webLog — so it doesn't flood the web interface.
-void rawLog(char dir, const String& data) {
-  if (!rawLogEnabled) return;
-  unsigned long ms = millis();
-  Serial.print(dir == 'R' ? "[R " : "[T ");
-  Serial.print(ms);
-  Serial.print("] ");
-  for (int i = 0; i < (int)data.length(); i++) {
-    uint8_t c = (uint8_t)data[i];
-    if      (c == '\r') Serial.print("\\r");
-    else if (c == '\n') Serial.print("\\n");
-    else if (c >= 0x20 && c < 0x7F) Serial.print((char)c);
-    else { char b[5]; snprintf(b, sizeof(b), "\\x%02X", c); Serial.print(b); }
-  }
-  Serial.println();
-}
-
-void addLog(const String& msg) {
-  unsigned long ms = millis();
-  char ts[16];
-  snprintf(ts, sizeof(ts), "[%lu.%01lu] ", ms / 1000, (ms % 1000) / 100);
-  String entry = String(ts) + msg;
-  Serial.println(entry);
-  webLog += entry + "\n";
-  if (webLog.length() > LOG_MAX_CHARS)
-    webLog.remove(0, webLog.length() - LOG_MAX_CHARS);
-}
-
-void sendRaw(const String& msg) {
-  rawLog('T', msg);
-  const char* buf = msg.c_str();
-  size_t rem = msg.length(), tot = 0;
-  while (rem > 0) {
-    uint32_t av = tud_cdc_n_write_available(0);
-    if (av > 0) {
-      uint32_t n = tud_cdc_n_write(0, buf + tot, rem < av ? rem : av);
-      tud_cdc_n_write_flush(0);
-      tot += n; rem -= n;
-    } else delay(1);
-    yield();
-  }
-}
-
-void sendStove(const String& msg) {
-  sendRaw(msg);
-  int nl = msg.indexOf('\n');
-  String p = nl > 0 ? msg.substring(0, nl) : msg;
-  addLog(">>> " + p + (msg.length() > (size_t)(p.length()+1) ? " [+" + String(msg.length()) + "B]" : ""));
-}
-
-// Encode SSID ASCII → uppercase hex
-String ssidToHex(const String& ssid) {
-  String h;
-  for (int i = 0; i < (int)ssid.length(); i++) {
-    char b[3]; sprintf(b, "%02X", (uint8_t)ssid[i]); h += b;
-  }
-  return h;
-}
-
-// Decode hex → ASCII SSID
-String hexToSsid(const String& hex) {
-  String s;
-  for (int i = 0; i + 1 < (int)hex.length(); i += 2)
-    s += (char)strtol(hex.substring(i, i + 2).c_str(), nullptr, 16);
-  return s;
-}
-
-// Save credentials to persistent storage and start WiFi
-void saveAndConnect(const String& ssidHex, const String& pass,
-                    const String& id,      const String& token) {
-  if (ssidHex.length() == 0 || pass.length() == 0) {
-    addLog("PROV: empty credentials, ignored");
-    return;
-  }
-  String ssid = hexToSsid(ssidHex);
-  // Validate: SSID must be printable ASCII (otherwise ssidHex was not valid hex)
-  bool ssidValid = ssid.length() > 0;
-  for (int i = 0; i < (int)ssid.length() && ssidValid; i++) {
-    if ((uint8_t)ssid[i] < 0x20 || (uint8_t)ssid[i] > 0x7E) ssidValid = false;
-  }
-  if (!ssidValid) {
-    addLog("PROV: non-ASCII SSID after decode (hex=" + ssidHex.substring(0,20) + ") → ignored");
-    return;
-  }
-  prefs.putString("ssid",  ssid);
-  prefs.putString("pass",  pass);
-  if (id.length())    { prefs.putString("id",    id);    stoveId    = id;    }
-  if (token.length()) { prefs.putString("token", token); stoveToken = token; }
-
-  wifiSsid    = ssid;
-  wifiPass    = pass;
-  wifiSsidHex = ssidHex;
-  provisioningMode = false;
-
-  addLog("PROV OK: SSID=\"" + ssid + "\" → WiFi WPA2/WPA3 connect");
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
-  wifiRetryDelayMs = 5000;
-  wifiNextRetryMs  = 0;
-  WiFi.setTxPower(WIFI_POWER_17dBm);
-  esp_wifi_set_max_tx_power(68);
-  addLog("WiFi MAC: " + WiFi.macAddress());
-  {
-    wifi_config_t conf = {};
-    memcpy(conf.sta.ssid,     ssid.c_str(), min(ssid.length(), (size_t)32));
-    memcpy(conf.sta.password, pass.c_str(), min(pass.length(), (size_t)64));
-    conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-    conf.sta.pmf_cfg.capable     = true;
-    conf.sta.pmf_cfg.required    = false;
-    esp_wifi_set_config(WIFI_IF_STA, &conf);
-  }
-  esp_wifi_set_max_tx_power(68);
-  // 500ms non-blocking delay before connect (lets WiFi driver settle after stop/start)
-  wifiConnectPendingAt = millis() + 500;
-}
-
-// Sync desiredControls from values received from the stove (first POST_CONTROLS only)
-void syncCtrlFromStove() {
-  if (ctrlAutoSynced) return;
-  if (stoveTempTarget < 0) return;
-  // Full sync if all fields are available
-  if (stoveOnOff >= 0 && stoveOpMode >= 0 && stovePower >= 0) {
-    ctrlAutoSynced = true;
-    int syncPower = (stovePower < 50) ? 50 : stovePower;
-    desiredControls = "onOff=" + String(stoveOnOff) +
-                      "; operatingMode=" + String(stoveOpMode) +
-                      "; heatingPower=" + String(syncPower) +
-                      "; tempRoomTarget=" + String(stoveTempTarget) + ";";
-    prefs.putString("ctrl", desiredControls);
-    addLog("--- ctrl full-sync: " + desiredControls);
-    return;
-  }
-  // Partial sync: only target received from stove — update that field only
-  int dc_onOff, dc_opMode, dc_power, dc_target;
-  parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
-  if (dc_target != stoveTempTarget) {
-    desiredControls = "onOff=" + String(dc_onOff) +
-                      "; operatingMode=" + String(dc_opMode) +
-                      "; heatingPower=" + String(dc_power) +
-                      "; tempRoomTarget=" + String(stoveTempTarget) + ";";
-    prefs.putString("ctrl", desiredControls);
-    addLog("--- ctrl partial-sync target=" + String(stoveTempTarget) + " (" +
-           String(stoveTempTarget/10) + "." + String(stoveTempTarget%10) + "°C)");
-  }
-}
-
-// Parse desiredControls ("onOff=N; operatingMode=N; heatingPower=N; tempRoomTarget=N;")
-// and extract the 4 integer values.
-void parseDesiredControls(int &dc_onOff, int &dc_opMode, int &dc_power, int &dc_target) {
-  dc_onOff = 0; dc_opMode = 1; dc_power = 30; dc_target = 190;
-  auto extractField = [&](const char* name) -> int {
-    int idx = desiredControls.indexOf(name);
-    if (idx < 0) return -1;
-    int eq = desiredControls.indexOf('=', idx);
-    if (eq < 0) return -1;
-    int sc = desiredControls.indexOf(';', eq);
-    return (sc >= 0) ? desiredControls.substring(eq+1, sc).toInt() : desiredControls.substring(eq+1).toInt();
-  };
-  int v;
-  if ((v = extractField("onOff=")) >= 0) dc_onOff = v;
-  if ((v = extractField("operatingMode=")) >= 0) dc_opMode = v;
-  if ((v = extractField("heatingPower=")) >= 0) dc_power = v;
-  if (dc_power < 50) dc_power = 50;  // lower bound 50%
-  if ((v = extractField("tempRoomTarget=")) >= 0) dc_target = v;
-}
-
-// Send GET_CONTROLS=1 in shifted-named format (matches official firmware).
-// Payload is parsed from desiredControls and reformatted:
-//   line 1: GET_CONTROLS=1; onOff=12201; operatingMode=<onOff>; heatingPower=<opMode>; tempRoomTarget=<power>;
-//   line 2: =<target>;
-void sendGetControls() {
-  int dc_onOff, dc_opMode, dc_power, dc_target;
-  parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
-  String line1 = "GET_CONTROLS=1; onOff=12201; operatingMode=" + String(dc_onOff) +
-                 "; heatingPower=" + String(dc_opMode) +
-                 "; tempRoomTarget=" + String(dc_power) + ";";
-  String line2 = "=" + String(dc_target) + ";";
-  sendStove(line1 + "\r\n" + line2 + "\r\n");
-  addLog(">>> " + line1 + " / " + line2);
-}
-
-// Named sentinel fields sent with GET_SENSORS so the stove echoes field names back.
-// The stove processes positionally and echoes the sentinel name alongside the value.
-// Confirmed field names from v2 ESP32 firmware decompilation (FUN_42008cf0).
-String buildGetSensors() {
-  return "GET_SENSORS=0; "
-         "sRoomTemp_ACT=0; "
-         "lFlameTemp_ACT=0; "
-         "ulError_ACT=0; "
-         "uiWarning_ACT=0; "
-         "usService_ACT=0; "
-         "uiDischargeMotor_ACT=0; "
-         "ulTotalPelletskg_ACT=0; "
-         "ulTotalOperatingTimeACT_h=0; "
-         "ulTotalStovesACT_h=0; "
-         "=;\n";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Build CDC status fields
-// 20 fields + optionally 3 OTA fields
-// full=false → Phase 1 (blank, dongle announces presence without credentials)
-// full=true  → Phase 2 (full credentials)
-// ─────────────────────────────────────────────────────────────────────────────
-String buildFields(bool full, int symbol = -1) {
-  if (symbol < 0) symbol = provisioningMode ? 5 : 4;  // 5=disconnected, 4=connected
-  // Always cache IP+RSSI so they survive temporary WiFi drops
-  static String cachedIP = "";
-  static int    cachedRssi = -60;
-  if (WiFi.status() == WL_CONNECTED) {
-    cachedIP = WiFi.localIP().toString();
-    int r = WiFi.RSSI(); if (r != 0) cachedRssi = r;
-  }
-  String ip  = full ? cachedIP : "";
-  String mac = full ? WiFi.macAddress() : "";
-
-  String s;
-  s += "0\n";                                              // 1  monitoring
-  s += "1\n";                                              // 2  on_off
-  s += "0\n";                                              // 3  scan_command
-  s += "0\n";                                              // 4  init_command
-  s += (full ? "1\n" : "0\n");                            // 5  initialised
-  s += String(symbol) + "\n";                              // 6  symbol
-  s += "0\n";                                              // 7  error
-  s += "999\n";                                            // 8  bl_version
-  s += "201\n";                                            // 9  app_version
-  s += "12201\n";                                          // 10 app_revision
-  s += (full ? "229\n" : "0\n");                          // 11 spwf_version
-  s += (full ? String(cachedRssi) + "\n" : "0\n");        // 12 rssi
-  s += (full ? stoveId    + "\n" : "\n");                  // 13 id
-  s += (full ? stoveToken + "\n" : "\n");                  // 14 token
-  s += "3\n";                                              // 15 protocol
-  s += (full && wifiSsidHex.length() ? wifiSsidHex + "\n" : "\n");  // 16 ssid hex
-  s += (full && wifiPass.length()    ? wifiPass    + "\n" : "\n");   // 17 wpa2
-  s += (full ? ip  + "\n" : "\n");                        // 18 ip
-  s += (full ? mac + "\n" : "\n");                        // 19 mac
-  s += "0\n";  // 20 update_dialogue (OTA state: 0=NONE/idle; file[0xBDA9] DOMO AVR32)
-  return s;
-}
-
-void sendPostCDCStatus(bool full) {
-  String msg = "POST_CDCDEVICE_STATUS=0;\n";
-  msg += buildFields(full);
-  msg += "-------\n";
-  sendRaw(msg);
-  addLog(">>> POST_CDCDEVICE_STATUS(" + String(full?"full":"blank") + ") [+" + String(msg.length()) + "B]");
-}
-
-void sendGetCDCStatus(bool full, int symbol = -1) {
-  String msg = "GET_CDCDEVICE_STATUS=0;\n";
-  msg += buildFields(full, symbol);
-  msg += "0\n0\n0\n";   // 3 champs OTA
-  sendRaw(msg);
-  addLog(">>> GET_CDCDEVICE_STATUS(" + String(full?"full":"blank") + (symbol >= 0 ? " sym="+String(symbol) : "") + ") [+" + String(msg.length()) + "B]");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NTP / RTC
-// ─────────────────────────────────────────────────────────────────────────────
-void startNTP() {
-  sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  sntp_setservername(0, NTP_SERVER);
-  sntp_init();
-  ntpDone = true;
-  addLog("NTP init");
-}
-
-String buildRTCTimestamp() {
-  time_t now = time(nullptr);
-  if (!ntpDone || now < 1000000) return "START_20260527_120000;\r\n";
-  struct tm* t = localtime(&now);
-  char buf[32];
-  snprintf(buf, sizeof(buf), "START_20%02d%02d%02d_%02d%02d%02d;\r\n",
-           t->tm_year - 100, t->tm_mon + 1, t->tm_mday,
-           t->tm_hour, t->tm_min, t->tm_sec);
-  return String(buf);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Parser POST_SENSORS
-// ─────────────────────────────────────────────────────────────────────────────
-void parseSensors(const String& raw) {
-  sensorCount = 0;
-  int pos = raw.indexOf(';');
-  if (pos < 0) return;
-  pos++;
-  int fi = 0;
-  while (pos < (int)raw.length() && sensorCount < MAX_SENSORS) {
-    while (pos < (int)raw.length() &&
-           (raw[pos]==' ' || raw[pos]=='\n' || raw[pos]=='\r')) pos++;
-    int eq = raw.indexOf('=', pos);
-    if (eq < 0) break;
-    int sc = raw.indexOf(';', eq);
-    if (sc < 0) sc = raw.length();
-    String key = raw.substring(pos, eq); key.trim();
-    String val = raw.substring(eq + 1, sc); val.trim();
-    if (key.length() == 0) key = "f" + String(fi);
-    if (val.length() > 0) {
-      sensors[sensorCount].key = key;
-      sensors[sensorCount].val = val;
-      sensorCount++;
-    }
-    fi++;
-    pos = sc + 1;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Web handlers
-// ─────────────────────────────────────────────────────────────────────────────
-void corsHeaders() {
-  server.sendHeader("Access-Control-Allow-Origin",  "*");
-  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-void handleLog() { corsHeaders(); server.send(200, "text/plain", webLog); }
-
-void handleApiStatus() {
-  corsHeaders();
-  String json = "{";
-  json += "\"wifi\":" + String(WiFi.status()==WL_CONNECTED?"true":"false") + ",";
-  json += "\"ip\":\"" + (WiFi.status()==WL_CONNECTED?WiFi.localIP().toString():String("")) + "\",";
-  json += "\"ssid\":\"" + wifiSsid + "\",";
-  json += "\"provisioning\":" + String(provisioningMode?"true":"false") + ",";
-  json += "\"mainLoop\":" + String(mainLoopActive?"true":"false") + ",";
-  json += "\"controls\":\"" + desiredControls + "\"";
-  json += "}";
-  server.send(200, "application/json", json);
-}
-
-void handleApiSensors() {
-  corsHeaders();
-  String json = "{";
-  // usMainState name table (DOMO AVR32 file[0xDE29], values 0-7)
-  static const char* const stoveStates[] = {
-    "Standby","Ignit","Start","Regulation","Cleaning","Burnoff","SplitlogChk","Splitlog"
-  };
-  for (int i = 0; i < sensorCount; i++) {
-    if (i) json += ",";
-    json += "\"" + sensors[i].key + "\":\"" + sensors[i].val + "\"";
-    // Expose human-readable stove state alongside raw value
-    if (sensors[i].key == "usMainState") {
-      int st = sensors[i].val.toInt();
-      json += ",\"stoveState\":\"" + String(st >= 0 && st < 8 ? stoveStates[st] : "unknown") + "\"";
-    }
-  }
-  // Append values received from the stove (POST_CONTROLS parsed positionally)
-  if (stoveOnOff >= 0) {
-    if (sensorCount) json += ",";
-    json += "\"stoveOnOff\":\"" + String(stoveOnOff) + "\"";
-    json += ",\"stoveOpMode\":\"" + String(stoveOpMode) + "\"";
-    json += ",\"stovePower\":\"" + String(stovePower) + "\"";
-    json += ",\"stoveTempTarget\":\"" + String(stoveTempTarget) + "\"";
-  }
-  json += "}";
-  server.send(200, "application/json", json);
-}
-
-void handleApiControls() {
-  corsHeaders();
-  if (server.method() == HTTP_OPTIONS) { server.send(204); return; }
-  if (server.method() == HTTP_POST || server.hasArg("cmd")) {
-    String cmd = server.hasArg("cmd") ? server.arg("cmd") : server.arg("plain");
-    if (cmd.length() > 0 && cmd.indexOf('=') >= 0) {
-      desiredControls = cmd;
-      if (mainLoopActive) { needsRearm = true; pendingControlsWrite = true; }
-      addLog("CTRL update: " + desiredControls);
-      server.send(200, "application/json", "{\"ok\":true}");
-    } else {
-      server.send(400, "application/json", "{\"error\":\"bad cmd\"}");
-    }
-  } else {
-    int dc_onOff, dc_opMode, dc_power, dc_target;
-    parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
-    String json = "{\"onOff\":" + String(dc_onOff) +
-                  ",\"operatingMode\":" + String(dc_opMode) +
-                  ",\"heatingPower\":" + String(dc_power) +
-                  ",\"tempRoomTarget\":" + String(dc_target) + "}";
-    server.send(200, "application/json", json);
-  }
-}
-
-void handleSetControls() {
-  corsHeaders();
-  if (server.method() == HTTP_OPTIONS) { server.send(204); return; }
-
-  int dc_onOff, dc_opMode, dc_power, dc_target;
-  parseDesiredControls(dc_onOff, dc_opMode, dc_power, dc_target);
-
-  if (server.hasArg("onOff"))          dc_onOff  = server.arg("onOff").toInt();
-  if (server.hasArg("operatingMode"))  dc_opMode = server.arg("operatingMode").toInt();
-  if (server.hasArg("heatingPower"))   dc_power  = server.arg("heatingPower").toInt();
-  if (server.hasArg("tempRoomTarget")) dc_target = server.arg("tempRoomTarget").toInt();
-
-  desiredControls = "onOff=" + String(dc_onOff) +
-                    "; operatingMode=" + String(dc_opMode) +
-                    "; heatingPower=" + String(dc_power) +
-                    "; tempRoomTarget=" + String(dc_target) + ";";
-
-  prefs.putString("ctrl", desiredControls);
-  if (mainLoopActive) { needsRearm = true; pendingControlsWrite = true; }
-  addLog("SET_CTRL: " + desiredControls);
-
-  String json = "{\"ok\":true"
-                ",\"onOff\":"          + String(dc_onOff)  +
-                ",\"operatingMode\":"  + String(dc_opMode)  +
-                ",\"heatingPower\":"   + String(dc_power)   +
-                ",\"tempRoomTarget\":" + String(dc_target)  + "}";
-  server.send(200, "application/json", json);
-}
-
-void handleOtaPage() {
-  server.send(200, "text/html", R"OTA(<!DOCTYPE html><html><head>
-<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>OTA — Open Firenet</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{background:#fff;border-radius:14px;padding:28px;max-width:380px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.1)}
-h1{font-size:1.2em;font-weight:800;color:#b5351e;margin-bottom:4px}
-.sub{font-size:12px;color:#aaa;margin-bottom:20px}
-input[type=file]{width:100%;padding:10px;border:2px dashed #ddd;border-radius:9px;font-size:13px;margin-bottom:16px;cursor:pointer;background:#fafafa}
-.btn{width:100%;padding:12px;background:#b5351e;color:#fff;border:none;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer}
-.btn:hover:not(:disabled){background:#e74c3c}
-.btn:disabled{background:#ccc;cursor:not-allowed}
-#st{margin-top:14px;font-size:13px;text-align:center;min-height:20px}
-.back{font-size:12px;color:#0078d7;text-decoration:none;display:block;margin-top:16px;text-align:center}
-.back:hover{text-decoration:underline}
-</style></head><body>
-<div class='card'>
-<h1>OTA Update</h1>
-<div class='sub'>Open Firenet — flash via WiFi</div>
-<form method='POST' action='/update' enctype='multipart/form-data'>
-<input type='file' name='firmware' accept='.bin' onchange='document.getElementById("btn").disabled=!this.value'>
-<button type='submit' class='btn' id='btn' disabled onclick='document.getElementById("st").textContent="Uploading..."'>Flash</button>
-</form>
-<div id='st'></div>
-<a class='back' href='/'>&#8592; Back</a>
-</div>
-</body></html>)OTA");
-}
-
-void handleOtaUpload() {
-  HTTPUpload& upload = server.upload();
-  if (upload.status == UPLOAD_FILE_START) {
-    addLog("OTA: start " + upload.filename);
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN))
-      addLog("OTA begin error: " + String(Update.errorString()));
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
-      addLog("OTA write error: " + String(Update.errorString()));
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (Update.end(true))
-      addLog("OTA done: " + String(upload.totalSize) + "B — rebooting");
-    else
-      addLog("OTA end error: " + String(Update.errorString()));
-  }
-}
-
-void handleRestart() {
-  corsHeaders();
-  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Rebooting\"}");
-  delay(200);
-  ESP.restart();
-}
-
-void handleResetWifi() {
-  addLog("=== RESET WiFi → provisioning mode ===");
-  prefs.remove("ssid"); prefs.remove("pass");
-  prefs.remove("id");   prefs.remove("token");
-  server.send(200, "application/json", "{\"ok\":true,\"message\":\"WiFi credentials erased — rebooting\"}");
-  delay(500);
-  ESP.restart();
-}
-
-void handleRoot() {
-  String wifiStatus = WiFi.status() == WL_CONNECTED
-    ? ("Connected — " + WiFi.localIP().toString() + " (" + wifiSsid + ")")
-    : (provisioningMode ? "En attente de configuration via l'écran du poêle"
-                        : "Déconnecté (reconnexion...)");
-
-  String html = R"(<!DOCTYPE html><html><head>
-<meta charset='UTF-8'>
-<meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Open Firenet</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;min-height:100vh;color:#222}
-.wrap{max-width:520px;margin:0 auto;padding:20px 16px}
-header{background:linear-gradient(135deg,#b5351e 0%,#e74c3c 100%);border-radius:14px;padding:18px 22px;margin-bottom:16px;box-shadow:0 4px 18px rgba(183,53,30,.32);display:flex;align-items:center;justify-content:space-between}
-.hinfo h1{color:#fff;font-size:1.5em;font-weight:800}
-.hinfo .sub{color:rgba(255,255,255,.72);font-size:12px;margin-top:2px}
-.lang-row{display:flex;gap:4px}
-.lbtn{padding:4px 10px;border:1.5px solid rgba(255,255,255,.45);background:transparent;color:rgba(255,255,255,.75);border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;transition:all .15s}
-.lbtn.active{background:rgba(255,255,255,.22);color:#fff;border-color:rgba(255,255,255,.9)}
-.card{background:#fff;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 2px 10px rgba(0,0,0,.07)}
-.ctitle{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#bbb;margin-bottom:12px}
-.ctrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.ctrow .ctitle{margin-bottom:0}
-.ok{background:#d4edda;color:#155724}.warn{background:#fff3cd;color:#856404}.err{background:#f8d7da;color:#721c24}
-.badge{display:inline-block;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:600}
-.stbadge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700}
-.son{background:#d4edda;color:#155724}.soff{background:#f0f0f0;color:#999}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#bbb;font-weight:600;padding:6px 10px;border-bottom:2px solid #f3f3f3;text-align:left}
-td{padding:8px 10px;border-bottom:1px solid #f5f5f5;color:#444}
-tr:last-child td{border-bottom:none}
-.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
-.pbtn{padding:13px 8px;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700;transition:filter .15s,opacity .15s}
-.pbtn:hover:not(:disabled){filter:brightness(.9)}
-.pbtn:disabled{cursor:not-allowed}
-.gbtn{background:#27ae60;color:#fff}
-.rbtn{background:#e74c3c;color:#fff}
-.arow{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #f5f5f5}
-.albl{font-size:13px;color:#777;font-weight:500}
-.actrl{display:flex;align-items:center;gap:12px}
-.abtn{width:38px;height:38px;border:2px solid #e4e4e4;background:#fafafa;border-radius:9px;cursor:pointer;font-size:22px;font-weight:300;color:#555;display:flex;align-items:center;justify-content:center;transition:border-color .15s,background .15s}
-.abtn:hover{border-color:#0078d7;background:#e7f1fd;color:#0078d7}
-.aval{font-size:2em;font-weight:800;min-width:58px;text-align:center;color:#111}
-.aunit{font-size:12px;color:#bbb;min-width:22px}
-.mrow{display:flex;gap:8px;padding-top:14px}
-.mbtn{flex:1;padding:10px 4px;border:2px solid #e4e4e4;background:#fafafa;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600;color:#888;transition:all .15s}
-.mbtn:hover{border-color:#0078d7;color:#0078d7;background:#fff}
-.mbtn.active{background:#0078d7;border-color:#0078d7;color:#fff}
-#fb{font-size:12px;min-height:18px;margin-top:10px;text-align:center;font-weight:600}
-.craw input[type=text]{width:100%;padding:9px 12px;border:2px solid #e4e4e4;border-radius:9px;font-size:12px;font-family:monospace;color:#444;transition:border-color .15s;outline:none}
-.craw input:focus{border-color:#0078d7}
-.sbtn{width:100%;padding:10px;margin-top:8px;background:#0078d7;color:#fff;border:none;border-radius:9px;cursor:pointer;font-size:14px;font-weight:600;transition:background .15s}
-.sbtn:hover{background:#0062b1}
-.consignes{font-size:10.5px;color:#ccc;margin-top:12px;font-family:monospace;word-break:break-all;line-height:1.4}
-.rlnk{font-size:11px;color:#e74c3c;text-decoration:none}
-.rlnk:hover{text-decoration:underline}
-.ltog{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;-webkit-user-select:none}
-.ltog .arr{width:24px;height:24px;border-radius:50%;background:#f3f3f3;display:flex;align-items:center;justify-content:center;font-size:10px;color:#aaa;transition:transform .22s,background .15s}
-.ltog:hover .arr{background:#e0eaf7;color:#0078d7}
-.ltog.open .arr{transform:rotate(180deg)}
-#logbody{display:none;margin-top:12px}
-#logbody.open{display:block}
-pre{background:#14141f;color:#8ab4f8;padding:12px;height:260px;overflow-y:scroll;font-size:10.5px;border-radius:9px;line-height:1.55;margin:0}
-.lact{display:flex;justify-content:flex-end;margin-top:8px}
-.bsm{font-size:11px;padding:4px 12px;background:#6c757d;color:#fff;border:none;border-radius:5px;cursor:pointer}
-</style></head><body>
-<div class='wrap'>
-<header>
-  <div class='hinfo'>
-    <h1>Open Firenet</h1>
-    <div class='sub' data-i18n='subtitle'></div>
-  </div>
-  <div class='lang-row'>
-    <button class='lbtn' id='lang-fr' onclick='setLang("fr")'>FR</button>
-    <button class='lbtn' id='lang-en' onclick='setLang("en")'>EN</button>
-  </div>
-</header>
-<div class='card'>
-  <div class='ctitle' data-i18n='network'></div>
-  <div id='wsts'>)" + wifiStatus + R"(</div>
-  <div id='provwarn'></div>
-</div>
-<div class='card'>
-  <div class='ctitle' data-i18n='sensors'></div>
-  <div id='sensors'><em style='color:#ccc;font-size:13px' data-i18n='waiting'></em></div>
-</div>
-<div class='card'>
-  <div class='ctrow'>
-    <div class='ctitle' data-i18n='control'></div>
-    <span class='stbadge soff' id='stbadge'></span>
-  </div>
-  <div class='pgrid'>
-    <button class='pbtn gbtn' id='btn-start' onclick='setPower(1)' data-i18n='start'></button>
-    <button class='pbtn rbtn' id='btn-stop'  onclick='setPower(0)' data-i18n='stop'></button>
-  </div>
-  <div class='arow' id='adj-temp' style='display:none'>
-    <span class='albl' data-i18n='temp'></span>
-    <div class='actrl'>
-      <button class='abtn' onclick='adjTemp(-1)'>&#8722;</button>
-      <span class='aval' id='temp'>&#8211;</span>
-      <span class='aunit'>°C</span>
-      <button class='abtn' onclick='adjTemp(1)'>+</button>
-    </div>
-  </div>
-  <div class='arow' id='adj-power'>
-    <span class='albl' data-i18n='power'></span>
-    <div class='actrl'>
-      <button class='abtn' onclick='adjPow(-5)'>&#8722;</button>
-      <span class='aval' id='pow'>&#8211;</span>
-      <span class='aunit'>%</span>
-      <button class='abtn' onclick='adjPow(5)'>+</button>
-    </div>
-  </div>
-  <div class='mrow'>
-    <button class='mbtn' id='m0' onclick='setMode(0)'></button>
-    <button class='mbtn' id='m1' onclick='setMode(1)'></button>
-    <button class='mbtn' id='m2' onclick='setMode(2)'></button>
-  </div>
-  <div id='fb'></div>
-  <div class='consignes'><span data-i18n='setpoints'></span>&nbsp;: <span id='ctrl'>)" + desiredControls + R"(</span></div>
-</div>
-<div class='card craw'>
-  <div class='ctrow'>
-    <div class='ctitle' data-i18n='cmd'></div>
-    <div style='display:flex;gap:12px'>
-      <a class='rlnk' href='/update' data-i18n='ota'></a>
-      <a class='rlnk' id='resetlnk' href='/reset-wifi' data-i18n='resetwifi'></a>
-      <a class='rlnk' id='restartlnk' href='#' data-i18n='restart'></a>
-    </div>
-  </div>
-  <form onsubmit='sendCmd(event)'>
-    <input type='text' id='cmdinput' placeholder='onOff=1; operatingMode=0; heatingPower=50; tempRoomTarget=220;'>
-    <button type='submit' class='sbtn' data-i18n='send'></button>
-  </form>
-</div>
-<div class='card'>
-  <div class='ltog' id='ltog' onclick='toggleLog()'>
-    <div class='ctitle' style='margin-bottom:0' data-i18n='log'></div>
-    <span class='arr'>&#9660;</span>
-  </div>
-  <div id='logbody'>
-    <pre id='log'></pre>
-    <div class='lact'><button class='bsm' onclick='copyLog()' data-i18n='copy'></button></div>
-  </div>
-</div>
-</div>
-<script>
-var ctrlState={onOff:0,operatingMode:0,heatingPower:50,tempRoomTarget:220};
-var logOpen=false,ignoreCtrlUntil=0;
-var isProv=)" + (provisioningMode ? "true" : "false") + R"(;
-var LANG=localStorage.getItem('rika_lang')||'fr';
-var I18N={
-  fr:{subtitle:'Contrôle local du poêle',network:'Réseau WiFi',sensors:'Capteurs',control:'Contrôle',start:'Allumer',stop:'Éteindre',temp:'Température',power:'Puissance',mode:'Mode',manual:'Manuel',auto:'Auto',comfort:'Confort',cmd:'Commande directe',send:'Envoyer',resetwifi:'Réinit. WiFi',resetconfirm:'Effacer les credentials WiFi et redémarrer ?',restart:'Redémarrer',restartconfirm:'Redémarrer l\'ESP32 ?',log:'Log',copy:'Copier',setpoints:'Consignes',waiting:'En attente...',stOn:'Allumé',stOff:'Éteint',modeset:'Mode → ',tempset:'Temp → ',powset:'Puissance → ',sent:'✓ Envoyé',sensor_room:'Temp. ambiante',ota:'OTA',provwarn:'Allez dans <strong>Réglages → WiFi</strong> sur l&#39;écran du poêle pour configurer le WiFi.'},
-  en:{subtitle:'Local stove control',network:'WiFi Network',sensors:'Sensors',control:'Control',start:'Start',stop:'Stop',temp:'Temperature',power:'Power',mode:'Mode',manual:'Manual',auto:'Auto',comfort:'Comfort',cmd:'Direct command',send:'Send',resetwifi:'Reset WiFi',resetconfirm:'Clear WiFi credentials and reboot?',restart:'Restart',restartconfirm:'Restart the ESP32?',log:'Log',copy:'Copy',setpoints:'Setpoints',waiting:'Waiting...',stOn:'On',stOff:'Off',modeset:'Mode → ',tempset:'Temp → ',powset:'Power → ',sent:'✓ Sent',sensor_room:'Room temp.',ota:'OTA',provwarn:'Go to <strong>Settings → WiFi</strong> on the stove screen to configure WiFi.'}
+// Lectures positionnelles. MÉCANISME PROUVÉ :
+// le poêle émet UNE position par NOM enregistré dans GET_SENSORS.
+// Sans nom, il n'émet que son jeu par défaut (1 capteur / 5 contrôles).
+// -> pour lire les positions hautes il FAUT enregistrer autant de noms. Le poêle
+// ignore le texte des noms, seule la position compte.
+struct Reading { const char* wire; const char* label; long scale; };
+static const Reading SENSORS[] = {          // PRIO1 f0..f12
+  {"f0",  "Temperature ambiante", 10},      // sRoomTemp_ACT ×10
+  {"f1",  "Temperature chambre combustion", 1}, // lFlameTemp_ACT
+  {"f2",  "Code erreur actif", 1},          // ulError_ACT
+  {"f3",  "Avertissement actif", 1},        // uiWarning_ACT
+  {"f4",  "Code service", 1},               // usService_ACT
+  {"f5",  "Moteur decharge (RPM)", 1},      // uiDischargeMotor_ACT
+  {"f6",  "Vis pellets (RPM)", 1},          // uiInsertionMotor_ACT
+  {"f7",  "Ventilateur combustion (RPM)", 1}, // uiIDFan_ACT
+  {"f8",  "Position registres air", 1},     // uiAirFlaps_ACT
+  {"f9",  "Heures pellets (min)", 1},       // ulRuntimePellets
+  {"f10", "Heures buches (min)", 1},        // ulRuntimeLogs
+  {"f11", "Consommation totale (kg)", 1},   // ulFeedRateTotal
+  {"f12", "Marche/Arret", 1},               // bOnOff
 };
-function t(k){return(I18N[LANG]||I18N.fr)[k]||k;}
-function setLang(l){LANG=l;localStorage.setItem('rika_lang',l);applyLang();}
-function applyLang(){
-  document.querySelectorAll('[data-i18n]').forEach(function(el){el.textContent=t(el.getAttribute('data-i18n'));});
-  var pw=document.getElementById('provwarn');
-  if(pw)pw.innerHTML=isProv?'<p style="font-size:13px;color:#856404;margin-top:8px">'+t('provwarn')+'</p>':'';
-  var rl=document.getElementById('resetlnk');
-  if(rl)rl.onclick=function(){return confirm(t('resetconfirm'));};
-  var rsl=document.getElementById('restartlnk');
-  if(rsl)rsl.onclick=function(){if(confirm(t('restartconfirm')))fetch('/restart');return false;};
-  document.getElementById('lang-fr').className='lbtn'+(LANG==='fr'?' active':'');
-  document.getElementById('lang-en').className='lbtn'+(LANG==='en'?' active':'');
-  updateModeButtons();updateStateDisplay();
+static const Reading CONTROLS[] = {         // positions 0..4
+  {"revision",    "Revision", 1},
+  {"onOff",       "Marche/Arret", 1},
+  {"mode",        "Mode regulation", 1},
+  {"targetStage", "Etage cible", 1},
+  {"roomTarget",  "Consigne ambiance", 10}, // dixiemes de degre
+};
+static const int N_SENS = sizeof(SENSORS)/sizeof(SENSORS[0]);
+static const int N_CTRL = sizeof(CONTROLS)/sizeof(CONTROLS[0]);
+static std::vector<std::string> SENSOR_NAMES;
+static std::vector<std::string> CONTROL_NAMES;
+static void buildNames() {
+  // Déclarer 53 capteurs (indices 0 à 52) pour débloquer les compteurs de pellets (44),
+  // heures (47) et entretien (50).
+  for (int i = 0; i < 53; i++) SENSOR_NAMES.push_back(firenet::sensName(i));
+  for (int i = 0; i < N_CTRL; i++) CONTROL_NAMES.push_back(CONTROLS[i].wire);
 }
 
-function fb(msg,ok){var el=document.getElementById('fb');el.style.color=ok===false?'#e74c3c':'#27ae60';el.textContent=msg;setTimeout(function(){el.textContent='';},3000);}
-function setPower(v){
-  var nc='onOff='+v+'; operatingMode='+(ctrlState.operatingMode||0)+'; heatingPower='+(ctrlState.heatingPower||50)+'; tempRoomTarget='+(ctrlState.tempRoomTarget||220)+';';
-  fetch('/api/controls',{method:'POST',body:nc}).then(function(){ctrlState.onOff=v;ignoreCtrlUntil=Date.now()+2000;fb(t(v?'stOn':'stOff'));updateDisplay();});
-}
-function adjTemp(d){
-  fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
-    ctrlState=s;
-    var tv=Math.max(140,Math.min(280,(ctrlState.tempRoomTarget||220)+d*10));
-    var nc='onOff='+ctrlState.onOff+'; operatingMode='+(ctrlState.operatingMode||0)+'; heatingPower='+(ctrlState.heatingPower||50)+'; tempRoomTarget='+tv+';';
-    fetch('/api/controls',{method:'POST',body:nc}).then(function(){ctrlState.tempRoomTarget=tv;ignoreCtrlUntil=Date.now()+2000;fb(t('tempset')+(tv/10).toFixed(1)+'°C');document.getElementById('temp').textContent=(tv/10).toFixed(1);});
-  });
-}
-function adjPow(d){
-  fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
-    ctrlState=s;
-    var p=Math.max(50,Math.min(100,(ctrlState.heatingPower||50)+d));
-    var nc='onOff='+ctrlState.onOff+'; operatingMode='+(ctrlState.operatingMode||0)+'; heatingPower='+p+'; tempRoomTarget='+(ctrlState.tempRoomTarget||220)+';';
-    fetch('/api/controls',{method:'POST',body:nc}).then(function(){ctrlState.heatingPower=p;ignoreCtrlUntil=Date.now()+2000;fb(t('powset')+p+'%');document.getElementById('pow').textContent=p;});
-  });
-}
-function updateDisplay(){
-  var tv=ctrlState.tempRoomTarget||220;
-  document.getElementById('temp').textContent=(tv/10).toFixed(1);
-  document.getElementById('pow').textContent=ctrlState.heatingPower||'–';
-  updateModeButtons();updateStateDisplay();updateAdjVisibility();
-}
-function updateStateDisplay(){
-  var on=ctrlState.onOff===1;
-  var b=document.getElementById('stbadge');
-  b.textContent=t(on?'stOn':'stOff');b.className='stbadge '+(on?'son':'soff');
-  var bs=document.getElementById('btn-start'),be=document.getElementById('btn-stop');
-  bs.disabled=on;bs.style.opacity=on?'0.38':'1';
-  be.disabled=!on;be.style.opacity=!on?'0.38':'1';
-}
-function updateAdjVisibility(){
-  var c=ctrlState.operatingMode===2;
-  document.getElementById('adj-temp').style.display=c?'':'none';
-  document.getElementById('adj-power').style.display=c?'none':'';
-}
-function updateModeButtons(){
-  var keys=['manual','auto','comfort'];
-  [0,1,2].forEach(function(i){
-    var b=document.getElementById('m'+i);
-    if(b){b.className='mbtn'+(ctrlState.operatingMode===i?' active':'');b.textContent=t(keys[i]);}
-  });
-}
-function setMode(m){
-  fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
-    ctrlState=s;
-    var nc='onOff='+ctrlState.onOff+'; operatingMode='+m+'; heatingPower='+(ctrlState.heatingPower||50)+'; tempRoomTarget='+(ctrlState.tempRoomTarget||220)+';';
-    fetch('/api/controls',{method:'POST',body:nc}).then(function(){
-      ctrlState.operatingMode=m;ignoreCtrlUntil=Date.now()+2000;
-      fb(t('modeset')+t(['manual','auto','comfort'][m]||''));
-      updateModeButtons();updateAdjVisibility();
-    });
-  });
-}
-function toggleLog(){
-  logOpen=!logOpen;
-  document.getElementById('logbody').className=logOpen?'open':'';
-  document.getElementById('ltog').className='ltog'+(logOpen?' open':'');
-  if(logOpen)fetchLog();
-}
-function fetchLog(){
-  fetch('/log').then(function(r){return r.text();}).then(function(txt){
-    var el=document.getElementById('log');
-    var atBot=el.scrollHeight-el.scrollTop<=el.clientHeight+30;
-    el.textContent=txt;if(atBot)el.scrollTop=el.scrollHeight;
-  });
-}
-function sendCmd(e){
-  e.preventDefault();
-  var c=document.getElementById('cmdinput').value.trim();
-  if(!c)return;
-  fetch('/api/controls',{method:'POST',body:c}).then(function(){
-    fb(t('sent'));ignoreCtrlUntil=Date.now()+2000;
-    fetch('/api/controls').then(function(r){return r.json();}).then(function(s){ctrlState=s;updateDisplay();});
-  });
-}
-function fetchAll(){
-  fetch('/api/sensors').then(function(r){return r.json();}).then(function(d){
-    var rows='<table><tr><th>'+t('sensors')+'</th><th></th></tr>';
-    if(d.f0!==undefined){var v0=parseInt(d.f0);rows+='<tr><td>'+t('sensor_room')+'</td><td>'+(v0>0?(v0/10).toFixed(1)+'°C':'–')+'</td></tr>';}
-    for(var k in d){if(k==='f0')continue;var v=parseInt(d[k]);var disp=(v>0&&v<5000)?((v/10).toFixed(1)+'°C'):(d[k]);rows+='<tr><td>'+k+'</td><td>'+disp+'</td></tr>';}
-    rows+='</table>';
-    document.getElementById('sensors').innerHTML=Object.keys(d).length?rows:'<em style="color:#ccc;font-size:13px">'+t('waiting')+'</em>';
-  }).catch(function(){});
-  fetch('/api/controls').then(function(r){return r.json();}).then(function(s){
-    if(Date.now()>ignoreCtrlUntil){
-      ctrlState=s;
-      var disp='onOff='+s.onOff+'; operatingMode='+s.operatingMode+'; heatingPower='+s.heatingPower+'; tempRoomTarget='+s.tempRoomTarget+';';
-      document.getElementById('ctrl').textContent=disp;
-      updateDisplay();
-    }
-  });
-  if(logOpen)fetchLog();
-}
-function copyLog(){var txt=document.getElementById('log').textContent;var el=document.createElement('textarea');el.value=txt;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);}
-setInterval(fetchAll,1500);fetchAll();applyLang();
-</script></body></html>)";
-  server.send(200, "text/html", html);
-}
+// --------------------------------------------------------- liaison protocole
+firenet::DongleLink* g_link = nullptr;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Drain USB pendant N ms
-// ─────────────────────────────────────────────────────────────────────────────
-void processStoveCommand(const String& raw);
-
-// Synchronous read of fields 1-17 from a POST_CDCDEVICE_STATUS echo.
-// Called immediately after receiving the header; reads fields in a tight
-// loop before the next poll cycle can interfere.
-void extractCredsFromStoveEcho() {
-  String ssidHex, wpa2, id, token;
-  int fi = 0;
-  unsigned long deadline = millis() + 2500;
-  while (fi < 20 && millis() < deadline) {
-    if (!USBSerial.available()) {
-      yield(); ArduinoOTA.handle(); server.handleClient();
-      continue;
+static void txToStove(const uint8_t* d, size_t n) {
+  // Le poêle (hôte USB Atmel AVR32) limite les transactions USB pleines à 4 (0x8004e568)
+  // et attend des "short packets" (<64 octets, bit SHORTSIGN dans UPSTA0).
+  // Le firmware officiel découpait ainsi chaque élément et flashait immédiatement (write+flush).
+  // On découpe en paquets de 32 octets maximum (< 64), chacun émis en short packet.
+  size_t off = 0;
+  while (off < n) {
+    size_t chunk = min((size_t)32, n - off);
+    uint32_t start = millis();
+    while (tud_cdc_n_write_available(0) < chunk && (millis() - start) < 200) {
+      delay(1);
     }
-    USBSerial.setTimeout(200);
-    String line = USBSerial.readStringUntil('\n');
-    while (line.length() > 0 &&
-           (line[line.length()-1]=='\r' || line[line.length()-1]==';' || line[line.length()-1]==' '))
-      line.remove(line.length()-1);
-    // Stopper si on voit une nouvelle commande (ne pas la consommer)
-    if (line.indexOf("POST_CDCDEVICE_STATUS") != -1 ||
-        line.indexOf("GET_CDCDEVICE_STATUS")  != -1 ||
-        line == "-------" || line == "OK" || line.indexOf('\x16') != -1) {
-      processStoveCommand(line);
-      break;
-    }
-    fi++;
-    if (fi <= 5) addLog("DBG fi=" + String(fi) + " [" + line + "]");
-    if      (fi == 3  && line.toInt() == 1) { scanRequested = true; addLog("scan_command=1 → scan requis"); }
-    else if (fi == 13) id      = line;
-    else if (fi == 14) token   = line;
-    else if (fi == 16) ssidHex = line;
-    else if (fi == 17) { wpa2 = line; break; }
+    uint32_t w = tud_cdc_n_write(0, d + off, chunk);
+    tud_cdc_n_write_flush(0);
+    off += w;
+    delay(2);
+    if (w == 0) break;
   }
-  addLog("CRED sync fi=" + String(fi) + " ssid=" + ssidHex + " wpa2len=" + String(wpa2.length()));
-  if (ssidHex.length() > 0 && wpa2.length() > 0)
-    saveAndConnect(ssidHex, wpa2,
-                   id.length()    > 0 ? id    : stoveId,
-                   token.length() > 0 ? token : stoveToken);
-}
-
-void drainFor(unsigned long ms) {
-  unsigned long deadline = millis() + ms;
-  while (millis() < deadline) {
-    if (USBSerial.available()) {
-      USBSerial.setTimeout(50);
-      String raw = USBSerial.readStringUntil('\n');
-      rawLog('R', raw);
-      while (raw.length() > 0 &&
-             (raw[raw.length()-1]=='\r' || raw[raw.length()-1]==';' || raw[raw.length()-1]==' '))
-        raw.remove(raw.length()-1);
-      if (raw.length() > 0 || parsePh1Echo || pendingCredFrame)
-        processStoveCommand(raw);
-    }
-    yield();
-    ArduinoOTA.handle();
-    server.handleClient();
+  if (off != n) {
+    DBG.printf("[txToStove] ERR sent only %u/%u bytes!\n", (unsigned)off, (unsigned)n);
+  } else if (n > 64) {
+    DBG.printf("[txToStove] OK %u bytes sent (short packets)\n", (unsigned)off);
   }
 }
+static uint32_t nowMs() { return millis(); }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Process lines received from the stove
-// ─────────────────────────────────────────────────────────────────────────────
-void processStoveCommand(const String& raw) {
-  if (raw.length() == 0) return;
-
-  // ── GET_CDCDEVICE_STATUS frame sent BY the stove (WiFi provisioning) ──────
-  // The stove sends this frame after the user configures WiFi
-  // from the stove screen: credentials are in fields 16 (ssid hex) and 17 (wpa2).
-  if (raw.indexOf("GET_CDCDEVICE_STATUS") == 0 && raw.indexOf("=") >= 0) {
-    addLog("<<< [STOVE→CRED] " + raw.substring(0, 40));
-    pendingCredFrame = true;
-    credFieldIdx = 0;
-    credSsidHex = ""; credWpa2 = ""; credId = ""; credToken = "";
-    return;
+// ------------------------------------------------------------------- JSON helpers
+static bool findJsonBool(const String& str, const String& key, bool& out) {
+  int idx = str.indexOf("\"" + key + "\"");
+  if (idx < 0) idx = str.indexOf("'" + key + "'");
+  if (idx < 0) return false;
+  int colon = str.indexOf(':', idx);
+  if (colon < 0) return false;
+  int start = colon + 1;
+  while (start < str.length() && (str[start] == ' ' || str[start] == '\t')) start++;
+  if (str.substring(start, start + 4).equalsIgnoreCase("true") || str[start] == '1') {
+    out = true; return true;
   }
-
-  // ── Champs de la trame credentials (pendingCredFrame) ─────────────────────
-  if (pendingCredFrame) {
-    credFieldIdx++;
-    if      (credFieldIdx == 3  && raw.toInt() == 1) { scanRequested = true; addLog("<<< scan_command=1 (stove GET_CDCDEVICE_STATUS)"); }
-    else if (credFieldIdx == 13) credId      = raw;
-    else if (credFieldIdx == 14) credToken   = raw;
-    else if (credFieldIdx == 16) credSsidHex = raw;
-    else if (credFieldIdx == 17) credWpa2    = raw;
-    if (credFieldIdx >= 20) {
-      pendingCredFrame = false;
-      addLog("CRED frame complete: ssid=" + credSsidHex + " id=" + credId);
-      if (credSsidHex.length() > 0 && credWpa2.length() > 0)
-        saveAndConnect(credSsidHex, credWpa2, credId, credToken);
-      else
-        addLog("CRED: empty SSID or WPA2, ignored");
-    }
-    return;
+  if (str.substring(start, start + 5).equalsIgnoreCase("false") || str[start] == '0') {
+    out = false; return true;
   }
-
-  // ── Parsing POST_CDCDEVICE_STATUS echo from stove (Phase 1 and Phase 2) ────
-  // Les champs vides (id/token/ssid/wpa2/ip/mac blancs) arrivent comme lignes vides.
-  // ATTENTION : si une nouvelle commande arrive (POST_CDCDEVICE_STATUS, -------,
-  // OK), on ferme parsePh1Echo et on laisse le code normal la traiter.
-  if (parsePh1Echo) {
-    // Detect lines that are NOT fields (new commands)
-    if (raw.indexOf("POST_CDCDEVICE_STATUS") != -1 ||
-        raw.indexOf("GET_CDCDEVICE_STATUS")  != -1 ||
-        raw == "-------" || raw == "OK" || raw.indexOf('\x16') != -1) {
-      parsePh1Echo = false;
-      addLog("PH1 echo ended early: " + ph1SsidHex);
-      // Save credentials if found (stove echo containing its stored credentials)
-      if (provisioningMode && ph1SsidHex.length() > 0 && ph1Wpa2.length() > 0)
-        saveAndConnect(ph1SsidHex, ph1Wpa2, ph1Id, ph1Token);
-      // Continue normal processing of this line (fall-through)
-    } else {
-      ph1FieldIdx++;
-      if (ph1FieldIdx == 3 && raw.toInt() == 1) {
-        scanRequested = true; addLog("scan_command=1 in echo → scan requested");
-      }
-      if      (ph1FieldIdx == 13) ph1Id      = raw;
-      else if (ph1FieldIdx == 14) ph1Token   = raw;
-      else if (ph1FieldIdx == 16) ph1SsidHex = raw;
-      else if (ph1FieldIdx == 17) ph1Wpa2    = raw;
-      if (ph1FieldIdx >= 20) {
-        parsePh1Echo = false;
-        addLog("PH1 echo: ssid=" + ph1SsidHex + " wpa2len=" + String(ph1Wpa2.length()) + " id=" + ph1Id);
-        if (provisioningMode && ph1SsidHex.length() > 0 && ph1Wpa2.length() > 0) {
-          addLog("PROV: stove has stored credentials → connecting");
-          saveAndConnect(ph1SsidHex, ph1Wpa2, ph1Id, ph1Token);
-        }
-      }
-      return;
-    }
-  }
-
-  // ── Trame POST_SENSORS multi-ligne ───────────────────────────────────────
-  // Handles both named fields (sRoomTemp_ACT=185) and unnamed (=185).
-  // drainFor already strips trailing ';' so =; sentinel arrives as '='.
-  if (pendingPostSensors) {
-    int eq = raw.indexOf('=');
-    if (eq >= 0) {
-      String key = raw.substring(0, eq); key.trim();
-      String val = raw.substring(eq + 1); val.trim();
-      if (val.length() == 0) {
-        pendingPostSensors = false;  // empty sentinel =; → end of sensors
-        return;
-      }
-      if (key.length() == 0) key = "f" + String(pendingSensorIdx);
-      if (sensorCount < MAX_SENSORS) {
-        sensors[sensorCount].key = key;
-        sensors[sensorCount].val = val;
-        sensorCount++;
-        String interp = "";
-        int v = val.toInt();
-        if (key == "sRoomTemp_ACT" && v > 50 && v < 500)
-          interp = " [" + String(v/10) + "." + String(v%10) + "°C]";
-        // usMainState values proven from DOMO AVR32 file[0xDE29]: 0-7
-        else if (key == "usMainState") {
-          const char* st[] = {"Standby","Ignit","Start","Regulation","Cleaning","Burnoff","SplitlogChk","Splitlog"};
-          if (v >= 0 && v < 8) interp = " [" + String(st[v]) + "]";
-        }
-        else if (key == "lFlameTemp_ACT")
-          interp = " [" + String(v) + "°C flame]";
-        else if (key == "ulError_ACT" && v != 0)
-          interp = " [ERROR 0x" + String((unsigned long)v, HEX) + "]";
-        else if (key == "uiWarning_ACT" && v != 0)
-          interp = " [WARN 0x" + String(v, HEX) + "]";
-        addLog("<<< SENSOR " + key + "=" + val + interp);
-        pendingSensorIdx++;
-      }
-      return;
-    }
-    pendingPostSensors = false;  // non-sensor line → end
-  }
-
-  // ── Log de la ligne (hors champs POST_SENSORS) ────────────────────────────
-  addLog("<<< " + raw);
-
-  // ── Reset USB (CDC probe) ─────────────────────────────────────────────────
-  if (raw.indexOf('\x16') != -1) {
-    mainLoopActive = phase2Done = rtcSynced = false;
-    phase1SentAt = phase2GetSentAt = phase2EchoAt = lastPollMs = lastCDCKeepaliveMs = 0;
-    phase1EchoCount = 0; parsePh1Echo = false; pendingCredFrame = false;
-    delay(50);
-    sendStove("GET_CDCDEVICE3_VERSION=0; BL=999; APP=201; REV=12201; DT=3;\n");
-    return;
-  }
-
-  // ── Version firmware ──────────────────────────────────────────────────────
-  if (raw.indexOf("GET_CDCDEVICE_VERSION_FINISHED") != -1) {
-    addLog("--- VERSION_FINISHED → Phase 1 (POST_blank + GET_blank) ---");
-    String p1  = "POST_CDCDEVICE_STATUS=0;\n";
-    p1 += buildFields(false);
-    p1 += "-------\n";
-    p1 += "GET_CDCDEVICE_STATUS=0;\n";
-    p1 += buildFields(false);
-    p1 += "0\n0\n0\n";
-    sendRaw(p1);
-    addLog(">>> Phase 1 POST+GET blank [+" + String(p1.length()) + "B]");
-    phase1SentAt = millis();
-    return;
-  }
-
-  // ── Stove echo of our transmissions (POST_CDCDEVICE_STATUS received) ──────
-  if (raw.indexOf("POST_CDCDEVICE_STATUS") != -1) {
-    if (phase1SentAt > 0 && !phase2Done) {
-      phase1EchoCount++;
-      addLog("--- Phase 1 echo #" + String(phase1EchoCount) + " → parse fields");
-      parsePh1Echo = true; ph1FieldIdx = 0;
-      ph1SsidHex = ""; ph1Wpa2 = ""; ph1Id = ""; ph1Token = "";
-      if (phase1EchoCount >= 2) {
-        addLog("--- Phase 1 complete → Phase 2 in 200 ms ---");
-        phase1SentAt = millis() - 800;
-      }
-    } else if (phase2Done && !mainLoopActive) {
-      addLog("--- Phase 2 echo received → OK + MAIN LOOP in 600 ms ---");
-      phase2EchoAt = millis();
-    } else if (phase2Done && mainLoopActive) {
-      addLog("--- CDC echo → sync read creds/scan ---");
-      extractCredsFromStoveEcho();
-    }
-    return;
-  }
-
-  // ── Stove dump terminator ───────────────────────────────────────────────────
-  if (raw == "-------") {
-    sendRaw("OK\r\n"); addLog(">>> OK (ack ---)");
-    return;
-  }
-
-  // ── Stove OK ack ────────────────────────────────────────────────────────────
-  if (raw == "OK") {
-    if (!mainLoopActive) {
-      mainLoopActive = true;
-      addLog("--- MAIN LOOP ACTIVE ---");
-    }
-    return;
-  }
-
-  // ── scan_command in stove echo → trigger WiFi scan ─────────────────────────
-  // Detection via scan_command field (field 3) in Phase 1/2 echo.
-  // Handled via GET_NETWORKS_FINISHED flow below.
-
-  // ── GET_CONTROLS (stove → bridge) ──────────────────────────────────────────
-  if (raw.indexOf("GET_CONTROLS") != -1) {
-    sendGetControls();
-    return;
-  }
-
-  // ── POST_CONTROLS ─────────────────────────────────────────────────────────
-  if (raw.indexOf("POST_CONTROLS") != -1) {
-    lastControlsRaw = raw;
-    addLog("--- CONTROLS: " + raw.substring(0, min((int)raw.length(), 120)));
-    // Parse positionally (shifted-named format when GC sent before GR)
-    // Ordre wire: artefact(12201) onOff operatingMode heatingPower tempRoomTarget
-    // The 5th value (tempRoomTarget) sometimes arrives on a 2nd line "=190;"
-    pendingPostControls = true; postControlsPos = 0;
-    stoveOnOff = stoveOpMode = stovePower = stoveTempTarget = -1;
-    String tmp = raw;
-    // Extract numeric values from the main line (ignore field names)
-    int pos = tmp.indexOf("=0;"); if (pos < 0) pos = tmp.indexOf("=0; ");
-    if (pos >= 0) tmp = tmp.substring(pos + 3);  // skip past "=0;"
-    // Iterate over "name=val;" or "=val;" fields
-    while (tmp.length() > 0) {
-      tmp.trim();
-      int eq = tmp.indexOf('=');
-      if (eq < 0) break;
-      int sc = tmp.indexOf(';', eq);
-      // Last field may have no ';' (stripped upstream)
-      int val = (sc >= 0) ? tmp.substring(eq + 1, sc).toInt() : tmp.substring(eq + 1).toInt();
-      postControlsPos++;
-      // position 1 = artefact GR (12201), 2=onOff, 3=opMode, 4=power, 5=target
-      if      (postControlsPos == 2) stoveOnOff     = val;
-      else if (postControlsPos == 3) stoveOpMode    = val;
-      else if (postControlsPos == 4) stovePower      = val;
-      else if (postControlsPos == 5) { stoveTempTarget = val; pendingPostControls = false; }
-      if (sc < 0) break;  // last field without ';', end of string
-      tmp = tmp.substring(sc + 1);
-    }
-    if (stoveTempTarget >= 0) {
-      addLog("--- Stove controls: onOff=" + String(stoveOnOff) + " opMode=" + String(stoveOpMode) +
-             " power=" + String(stovePower) + " target=" + String(stoveTempTarget) + " (=" + String(stoveTempTarget/10) + "." + String(stoveTempTarget%10) + "°C)");
-      syncCtrlFromStove();
-    }
-    return;
-  }
-
-  // ── Continuation POST_CONTROLS (=190; = dernier champ tempRoomTarget) ─────
-  if (pendingPostControls && raw.length() > 1 && raw[0] == '=') {
-    pendingPostControls = false;
-    stoveTempTarget = raw.substring(1).toInt();
-    addLog("--- Stove controls: onOff=" + String(stoveOnOff) + " opMode=" + String(stoveOpMode) +
-           " power=" + String(stovePower) + " target=" + String(stoveTempTarget) + " (=" + String(stoveTempTarget/10) + "." + String(stoveTempTarget%10) + "°C)");
-    syncCtrlFromStove();
-    return;
-  }
-
-  // ── POST_SENSORS ──────────────────────────────────────────────────────────
-  if (raw.indexOf("POST_SENSORS") != -1) {
-    lastSensorsRaw   = raw;
-    sensorCount      = 0;
-    pendingSensorIdx = 0;
-    parseSensors(raw);
-    if (sensorCount == 0) {
-      pendingPostSensors = true;
-      addLog("--- SENSORS (multi-ligne)");
-    } else {
-      String f = "";
-      for (int i = 0; i < sensorCount; i++) f += " " + sensors[i].key + "=" + sensors[i].val + ";";
-      addLog("--- SENSORS:" + f);
-    }
-    return;
-  }
-
-  // ── GET_NETWORKS_FINISHED ─────────────────────────────────────────────────
-  if (raw.indexOf("GET_NETWORKS_FINISHED") != -1) {
-    if (scanAwaitingGNF) {
-      // GNF received in response to our GET_NETWORKS=1 → send sym=7 (display trigger)
-      // Confirmed in official firmware: FUN_420097d0(0) called on scan GNF reception
-      scanAwaitingGNF = false;
-      delay(20);
-      sendGetCDCStatus(true, 7);
-      drainFor(300);
-      return;
-    }
-    if (!pollInProgress && !scanBusy) {
-      lastPollMs = millis(); lastSensorPollMs = lastPollMs;
-      pendingControlsWrite = false;
-      sendGetControls();
-      delay(50);
-      sendStove("GET_REVISION=0; revision=12201; frequency=30; \n");
-      sendStove(buildGetSensors());
-      drainFor(100);
-      sendRaw("TRANSFER_COMPLETED\n");
-      drainFor(2000);
-      sendRaw("TRANSFER_COMPLETED\n");
-      drainFor(500);
-    }
-    return;
-  }
-
-  if (raw.indexOf("revision=") != -1 || raw.indexOf("POST_FIRENET") != -1) return;
+  return false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Setup
-// ─────────────────────────────────────────────────────────────────────────────
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  addLog("--- OPEN FIRENET ---");
+static bool findJsonFloat(const String& str, const String& key, float& out) {
+  int idx = str.indexOf("\"" + key + "\"");
+  if (idx < 0) idx = str.indexOf("'" + key + "'");
+  if (idx < 0) idx = str.indexOf(key + "=");
+  if (idx < 0) return false;
+  int sep = str.indexOf(':', idx);
+  if (sep < 0 || (str.indexOf('=', idx) > 0 && str.indexOf('=', idx) < sep)) sep = str.indexOf('=', idx);
+  if (sep < 0) return false;
+  int start = sep + 1;
+  while (start < str.length() && (str[start] == ' ' || str[start] == '"' || str[start] == '\'')) start++;
+  int end = start;
+  while (end < str.length() && (isDigit(str[end]) || str[end] == '.' || str[end] == '-')) end++;
+  if (end > start) {
+    out = str.substring(start, end).toFloat();
+    return true;
+  }
+  return false;
+}
 
-  // WiFi event handler — log disconnects + exponential backoff to avoid flooding the AP
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      uint8_t reason = info.wifi_sta_disconnected.reason;
-      // Raison 2=AUTH_EXPIRE, 4=ASSOC_EXPIRE, 8=ASSOC_FAIL, 15=4WAY_TIMEOUT(mauvais mdp), 200=BEACON_TIMEOUT, 201=NO_AP_FOUND
-      char buf[80];
-      snprintf(buf, sizeof(buf), "WiFi DISCONNECTED reason=%d (0x%02X) → retry in %lus",
-               reason, reason, wifiRetryDelayMs / 1000);
-      addLog(String(buf));
-      wifiNextRetryMs = millis() + wifiRetryDelayMs;
-      if (wifiRetryDelayMs < 600000) wifiRetryDelayMs = min(wifiRetryDelayMs * 2, 600000UL);
-    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
-      addLog("WiFi STA_CONNECTED (association OK)");
-    } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      wifiRetryDelayMs = 5000;  // reset backoff on successful connection
-      addLog("WiFi GOT_IP: " + WiFi.localIP().toString());
-    }
-  });
+static bool findJsonString(const String& str, const String& key, String& out) {
+  int idx = str.indexOf("\"" + key + "\"");
+  if (idx < 0) idx = str.indexOf("'" + key + "'");
+  if (idx < 0) return false;
+  int colon = str.indexOf(':', idx);
+  if (colon < 0) return false;
+  int start = str.indexOf('"', colon);
+  if (start < 0) return false;
+  int end = str.indexOf('"', start + 1);
+  if (end < 0) return false;
+  out = str.substring(start + 1, end);
+  return true;
+}
 
-  // Init WiFi STA
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_STA);
-  esp_wifi_set_ps(WIFI_PS_NONE);
-  addLog("WiFi MAC: " + WiFi.macAddress());
+// ------------------------------------------------------------------- API web V2
+static String jsonState() {
+  const auto& m = g_link->model();
 
-  // ── Charger credentials depuis NVS ────────────────────────────────────────
-  prefs.begin("rika", false);
-  wifiSsid      = prefs.getString("ssid",   "");
-  wifiPass      = prefs.getString("pass",   "");
-  stoveId       = prefs.getString("id",     "0000000");
-  stoveToken    = prefs.getString("token",  "00000000");
-  rawLogEnabled = prefs.getBool  ("rawlog", false);
+  long rTemp = (m.sensors_pos.size() > 0) ? m.sensors_pos[0] : 0;
+  auto itR = m.sensors.find("roomTemp"); if (itR != m.sensors.end()) rTemp = itR->second;
 
-  // ── Validate stored SSID (must be printable ASCII) ─────────────────────────
-  {
-    bool ssidOk = wifiSsid.length() > 0;
-    for (int i = 0; i < (int)wifiSsid.length() && ssidOk; i++) {
-      if ((uint8_t)wifiSsid[i] < 0x20 || (uint8_t)wifiSsid[i] > 0x7E) ssidOk = false;
-    }
-    if (!ssidOk && wifiSsid.length() > 0) {
-      addLog("NVS: SSID corrompu, effacement");
-      prefs.remove("ssid"); prefs.remove("pass");
-      wifiSsid = ""; wifiPass = "";
-    }
+  long fTemp = (m.sensors_pos.size() > 1) ? m.sensors_pos[1] : 0;
+  auto itF = m.sensors.find("flame"); if (itF != m.sensors.end()) fTemp = itF->second;
+
+  long bTemp = (m.sensors_pos.size() > 27) ? m.sensors_pos[27] : 0;
+  auto itB = m.sensors.find("boardSensor"); if (itB != m.sensors.end()) bTemp = itB->second;
+
+  long mainSt = (m.sensors_pos.size() > 31) ? m.sensors_pos[31] : 1;
+  auto itMS = m.sensors.find("mainState"); if (itMS != m.sensors.end()) mainSt = itMS->second;
+
+  long sState = (m.sensors_pos.size() > 32) ? m.sensors_pos[32] : 0;
+  auto itSS = m.sensors.find("subState"); if (itSS != m.sensors.end()) sState = itSS->second;
+
+  long pTotal = (m.sensors_pos.size() > 49) ? m.sensors_pos[49] : 0;
+  auto itPT = m.sensors.find("pelletsTotal"); if (itPT != m.sensors.end()) pTotal = itPT->second;
+
+  long pHours = (m.sensors_pos.size() > 47) ? m.sensors_pos[47] : 0;
+  auto itPH = m.sensors.find("pelletHours"); if (itPH != m.sensors.end()) pHours = itPH->second;
+
+  long sCount = (m.sensors_pos.size() > 50) ? m.sensors_pos[50] : 700;
+  auto itSC = m.sensors.find("serviceCountdown"); if (itSC != m.sensors.end()) sCount = itSC->second;
+
+  long idFan = (m.sensors_pos.size() > 9) ? m.sensors_pos[9] : 0;
+  auto itFan = m.sensors.find("idFanMeas"); if (itFan != m.sensors.end()) idFan = itFan->second;
+
+  long auger = (m.sensors_pos.size() > 7) ? m.sensors_pos[7] : 0;
+  auto itAug = m.sensors.find("augerSet"); if (itAug != m.sensors.end()) auger = itAug->second;
+
+  long errMask = (m.sensors_pos.size() > 3) ? m.sensors_pos[3] : 0;
+  auto itEM = m.sensors.find("errMask32"); if (itEM != m.sensors.end()) errMask = itEM->second;
+
+  long errSub = (m.sensors_pos.size() > 4) ? m.sensors_pos[4] : 0;
+  auto itES = m.sensors.find("errSub"); if (itES != m.sensors.end()) errSub = itES->second;
+
+  long modelId = (m.sensors_pos.size() > 36) ? m.sensors_pos[36] : 13;
+  auto itMod = m.sensors.find("model"); if (itMod != m.sensors.end()) modelId = itMod->second;
+
+  long appVer = (m.sensors_pos.size() > 38) ? m.sensors_pos[38] : 229;
+  auto itAV = m.sensors.find("appVerBoard"); if (itAV != m.sensors.end()) appVer = itAV->second;
+
+  long buildVer = (m.sensors_pos.size() > 44) ? m.sensors_pos[44] : 58512;
+  auto itBV = m.sensors.find("firmwareBuild"); if (itBV != m.sensors.end()) buildVer = itBV->second;
+
+  long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
+  auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
+  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+
+  auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
+  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+
+  auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
+  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+
+  auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
+  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+
+  const char* stName = "unknown";
+  const char* stLabel = "Inconnu";
+  bool isBurning = false;
+  switch (mainSt) {
+    case 0: stName = "off"; stLabel = "Arrêt"; isBurning = false; break;
+    case 1: stName = "standby"; stLabel = "Veille (Standby)"; isBurning = false; break;
+    case 2: stName = "ignition"; stLabel = "Allumage (Ignition)"; isBurning = true; break;
+    case 3: stName = "flame_start"; stLabel = "Démarrage flamme"; isBurning = true; break;
+    case 4: stName = "heating"; stLabel = "En régulation (Chauffe)"; isBurning = true; break;
+    case 5: stName = "cleaning"; stLabel = "Nettoyage grille"; isBurning = true; break;
+    case 6: stName = "burn_off"; stLabel = "Extinction (Burn off)"; isBurning = true; break;
+    case 7: stName = "splitlog"; stLabel = "Bûches (Splitlog)"; isBurning = true; break;
   }
 
-  // ── Charger consignes depuis NVS ──────────────────────────────────────────
-  {
-    String savedCtrl = prefs.getString("ctrl", "");
-    if (savedCtrl.length() > 10) {
-      // Migration : si l'ancienne valeur a tempRoomTarget < 100 c'est en °C directs
-      // (pre-2026-05-28 bug) → reset to correct ×10 default
-      int trtIdx = savedCtrl.indexOf("tempRoomTarget=");
-      if (trtIdx >= 0) {
-        int val = savedCtrl.substring(trtIdx + 15).toInt();
-        if (val > 0 && val < 100) {
-          addLog("Stored ctrl: tempRoomTarget=" + String(val) + " (legacy °C format) → reset to default");
-          prefs.remove("ctrl");
-        } else {
-          desiredControls = savedCtrl;
-        }
-      } else {
-        desiredControls = savedCtrl;
-      }
-    }
+  const char* modeName = "comfort";
+  switch (curMode) {
+    case 0: modeName = "manual"; break;
+    case 1: modeName = "auto"; break;
+    case 2: modeName = "comfort"; break;
   }
 
-  if (wifiSsid.length() > 0) {
-    provisioningMode = false;
-    wifiSsidHex = ssidToHex(wifiSsid);
-    addLog("NVS: SSID=\"" + wifiSsid + "\" id=" + stoveId);
+  float rTempF = rTemp / 10.0f;
+  float rTargetF = curRoom / 10.0f;
+  float fTempF = (float)fTemp;
+  float bTempF = (float)bTemp;
 
-    WiFi.setTxPower(WIFI_POWER_17dBm);
-    esp_wifi_set_max_tx_power(68);
-    {
-      wifi_config_t conf = {};
-      memcpy(conf.sta.ssid,     wifiSsid.c_str(), min(wifiSsid.length(), (size_t)32));
-      memcpy(conf.sta.password, wifiPass.c_str(), min(wifiPass.length(), (size_t)64));
-      conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-      conf.sta.pmf_cfg.capable     = true;
-      conf.sta.pmf_cfg.required    = false;
-      esp_wifi_set_config(WIFI_IF_STA, &conf);
-    }
-    esp_wifi_set_max_tx_power(68);
-    wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
-    addLog("WiFi WPA2/WPA3 connect (background): \"" + wifiSsid + "\"");
-  } else {
-    provisioningMode = true;
-    WiFi.persistent(false);
-    WiFi.disconnect(true, false);  // vider les creds internes ESP32 (stales)
-    WiFi.mode(WIFI_STA);
-    addLog("Provisioning mode: waiting for credentials from stove screen");
-    // Proactive scan to populate the stove network list at boot
-    WiFi.scanNetworks(true);
-    scanBusy = true;
-    addLog("Scan WiFi proactif (provisioning boot)");
-  }
-
-  // ── OTA ───────────────────────────────────────────────────────────────────
-  ArduinoOTA.begin();
-
-  // ── Web server ────────────────────────────────────────────────────────────
-  server.on("/",              handleRoot);
-  server.on("/log",           handleLog);
-  server.on("/api/status",    handleApiStatus);
-  server.on("/api/sensors",   handleApiSensors);
-  server.on("/api/controls",  handleApiControls);
-  server.on("/set_controls",  handleSetControls);
-  server.on("/reset-wifi",    handleResetWifi);
-  server.on("/restart",       handleRestart);
-  server.on("/update", HTTP_GET, handleOtaPage);
-  server.on("/raw_log", []() {
-    if (server.hasArg("v")) {
-      rawLogEnabled = server.arg("v").toInt() != 0;
-      prefs.putBool("rawlog", rawLogEnabled);
-    }
-    server.send(200, "text/plain",
-      String("raw_log: ") + (rawLogEnabled ? "ON" : "OFF") +
-      "\nUsage: /raw_log?v=1 to enable, /raw_log?v=0 to disable\n");
-  });
-  server.on("/update", HTTP_POST,
-    []() {
-      server.sendHeader("Connection", "close");
-      bool ok = !Update.hasError();
-      server.send(ok ? 200 : 500, "text/plain",
-                  ok ? "OK — rebooting..." : String("Error: ") + Update.errorString());
-      delay(500);
-      ESP.restart();
-    },
-    handleOtaUpload
+  char buf[1200];
+  snprintf(buf, sizeof(buf),
+    "{"
+    "\"device\":{"
+      "\"name\":\"Open-Firenet\","
+      "\"version\":\"2.0.0\","
+      "\"ip\":\"%s\","
+      "\"mac\":\"%s\","
+      "\"wifi_ssid\":\"%s\","
+      "\"wifi_rssi\":%d,"
+      "\"uptime_seconds\":%lu,"
+      "\"free_heap\":%u,"
+      "\"connected\":%s"
+    "},"
+    "\"stove\":{"
+      "\"state\":\"%s\","
+      "\"state_code\":%ld,"
+      "\"state_label\":\"%s\","
+      "\"sub_state\":%ld,"
+      "\"is_burning\":%s,"
+      "\"has_error\":%s,"
+      "\"error_code\":%ld,"
+      "\"error_sub\":%ld,"
+      "\"model\":%ld,"
+      "\"mainboard_version\":\"%ld.%02ld\","
+      "\"firmware_build\":\"%ld\""
+    "},"
+    "\"sensors\":{"
+      "\"room_temperature\":%.1f,"
+      "\"combustion_temperature\":%.1f,"
+      "\"board_temperature\":%.1f,"
+      "\"pellets_total_kg\":%ld,"
+      "\"pellet_hours\":%ld,"
+      "\"service_countdown_kg\":%ld,"
+      "\"fan_speed_rpm\":%ld,"
+      "\"auger_speed_rpm\":%ld"
+    "},"
+    "\"controls\":{"
+      "\"on\":%s,"
+      "\"mode\":\"%s\","
+      "\"mode_code\":%ld,"
+      "\"target_temperature\":%.1f,"
+      "\"power_percent\":%ld"
+    "},",
+    (WiFi.getMode()==WIFI_AP?WiFi.softAPIP():WiFi.localIP()).toString().c_str(),
+    WiFi.macAddress().c_str(),
+    WiFi.SSID().c_str(),
+    WiFi.RSSI(),
+    millis() / 1000UL,
+    ESP.getFreeHeap(),
+    m.version_ack ? "true" : "false",
+    stName, mainSt, stLabel, sState,
+    isBurning ? "true" : "false",
+    errMask != 0 ? "true" : "false",
+    errMask, errSub,
+    modelId, appVer / 100, appVer % 100, buildVer,
+    rTempF, fTempF, bTempF, pTotal, pHours, sCount, idFan, auger,
+    (curOn == 1) ? "true" : "false",
+    modeName, curMode, rTargetF, curStage
   );
-  // server.begin() called from loop() only when WiFi is connected
 
-  // ── USB CDC ───────────────────────────────────────────────────────────────
-  USB.VID(RIKA_VID);
-  USB.PID(RIKA_PID);
-  USB.productName("RIKA FireNet 2.0 USB-WiFi Stick");
-  USBSerial.begin();
+  String j = String(buf);
+  j += "\"wifi_mode\":\"" + String(WiFi.getMode()==WIFI_AP?"AP":"STA") + "\",";
+  j += "\"ip\":\"" + (WiFi.getMode()==WIFI_AP?WiFi.softAPIP():WiFi.localIP()).toString() + "\",";
+  j += "\"wifi_connected\":" + String(WiFi.status()==WL_CONNECTED?"true":"false") + ",";
+  j += "\"write_enabled\":true,";
+  j += "\"version_ack\":" + String(m.version_ack ? "true" : "false") + ",";
+  j += "\"generation\":" + String(m.generation) + ",";
+  j += "\"frames_in\":" + String(m.frames_in) + ",";
+  j += "\"frames_out\":" + String(m.frames_out) + ",";
+  j += "\"revision\":" + String((long)m.revision) + ",";
+  j += "\"state_label\":\"" + String(stLabel) + "\",";
+
+  // raw_sensors pour le tableau complet
+  j += "\"raw_sensors\":{";
+  bool first = true;
+  for (auto& kv : m.sensors) {
+    if (!first) j += ","; first = false;
+    j += "\"" + String(kv.first.c_str()) + "\":" + String(kv.second);
+  }
+  j += "},";
+
+  // legacy status
+  j += "\"status\":{";
+  first = true;
+  for (auto& kv : m.status) {
+    if (!first) j += ","; first = false;
+    j += "\"" + String(kv.first.c_str()) + "\":\"" + String(kv.second.c_str()) + "\"";
+  }
+  j += "},";
+
+  // legacy controls_pos / sensors_pos
+  j += "\"sensors_pos\":[";
+  first = true;
+  for (long v : m.sensors_pos) { if (!first) j += ","; first = false; j += String(v); }
+  j += "],\"controls_pos\":[";
+  first = true;
+  for (long v : m.controls_pos) { if (!first) j += ","; first = false; j += String(v); }
+  j += "]}";
+
+  return j;
+}
+
+static void handleState()  { sendCors(); web.send(200, "application/json", jsonState()); }
+static void handleRoot()   { web.send_P(200, "text/html", INDEX_HTML); }
+static void handleArm()    { sendCors(); web.send(200, "application/json", "{\"write\":true}"); }
+
+static void handleRestart() {
+  sendCors();
+  web.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+  delay(300); ESP.restart();
+}
+
+
+// POST /api/wifi  ssid=<..>&pass=<..>  -> enregistre et redémarre en STA
+static void handleWifi() {
+  if (!web.hasArg("ssid")) { web.send(400,"application/json",
+      "{\"error\":\"ssid requis\"}"); return; }
+  prefs.begin("firenet", false);
+  prefs.putString("ssid", web.arg("ssid"));
+  prefs.putString("pass", web.hasArg("pass") ? web.arg("pass") : "");
+  prefs.end();
+  web.send(200,"application/json","{\"ok\":true,\"reboot\":true}");
+  delay(300); ESP.restart();
+}
+// POST /api/forget -> efface le WiFi, repasse en AP au prochain boot
+static void handleForget() {
+  prefs.begin("firenet", false); prefs.clear(); prefs.end();
+  web.send(200,"application/json","{\"ok\":true}");
+  delay(300); ESP.restart();
+}
+
+static void startApMode() {
+  g_isApMode = true;
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("Open-Firenet-Setup", "openfirenet");
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  DBG.printf("[wifi] AP Open-Firenet-Setup (DNS captif actif) IP: %s\n",
+             WiFi.softAPIP().toString().c_str());
+}
+
+static void handleCaptiveRedirect() {
+  if (g_isApMode) {
+    web.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
+    web.send(302, "text/plain", "");
+  } else {
+    web.sendHeader("Location", String("http://") + WiFi.localIP().toString() + "/", true);
+    web.send(302, "text/plain", "");
+  }
+}
+
+// GET /api/scan -> scanne les réseaux 2.4 GHz et renvoie un tableau JSON
+static void handleScan() {
+  sendCors();
+  int n = WiFi.scanComplete();
+  if (n == -2) {
+    WiFi.scanNetworks(true);
+    web.send(202, "application/json", "{\"status\":\"scanning\"}");
+    return;
+  }
+  if (n == -1) {
+    web.send(202, "application/json", "{\"status\":\"scanning\"}");
+    return;
+  }
+
+  String json = "[";
+  std::vector<String> seen;
+  int count = 0;
+  for (int i = 0; i < n; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid.length() == 0) continue;
+    bool dup = false;
+    for (const auto& s : seen) { if (s == ssid) { dup = true; break; } }
+    if (dup) continue;
+    seen.push_back(ssid);
+
+    if (count > 0) json += ",";
+    json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+    count++;
+  }
+  json += "]";
+  WiFi.scanDelete();
+  web.send(200, "application/json", json);
+}
+
+// ------------------------------------------------ API compatibilité open-firenet & Home Assistant
+static String g_recentLogs = "";
+static void logEntry(const char* dir, const std::string& msg) {
+  char b[256];
+  snprintf(b, sizeof b, "[%lu][%s] %s\n", (unsigned long)millis(), dir, msg.c_str());
+  if (g_recentLogs.length() > 8000) g_recentLogs = g_recentLogs.substring(2000);
+  g_recentLogs += b;
+}
+
+static void sendCors() {
+  web.sendHeader("Access-Control-Allow-Origin", "*");
+  web.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  web.sendHeader("Access-Control-Allow-Headers", "*");
+}
+
+// GET /api/status (compatibilité open-firenet)
+static void handleApiStatus() {
+  sendCors();
+  const auto& m = g_link->model();
+  long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
+  auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
+  auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
+  auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
+  auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
+
+  char ctrlStr[160];
+  snprintf(ctrlStr, sizeof ctrlStr, "onOff=%ld; operatingMode=%ld; heatingPower=%ld; tempRoomTarget=%ld;",
+           curOn, curMode, curStage, curRoom);
+
+  String json = "{";
+  json += "\"wifi\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + ",";
+  json += "\"ip\":\"" + (WiFi.getMode() == WIFI_AP ? WiFi.softAPIP().toString() : WiFi.localIP().toString()) + "\",";
+  json += "\"ssid\":\"" + wifiSsid + "\",";
+  json += "\"provisioning\":" + String(WiFi.getMode() == WIFI_AP ? "true" : "false") + ",";
+  json += "\"mainLoop\":" + String(m.version_ack ? "true" : "false") + ",";
+  json += "\"pauseCdc\":false,";
+  json += "\"controls\":\"" + String(ctrlStr) + "\",";
+  json += "\"revisionFrequency\":60";
+  json += "}";
+  web.send(200, "application/json", json);
+}
+
+// GET /api/sensors (compatibilité open-firenet & Home Assistant)
+static void handleApiSensors() {
+  sendCors();
+  const auto& m = g_link->model();
+  String json = "{";
+  bool first = true;
+  auto addKV = [&](const String& k, const String& v) {
+    if (!first) json += ",";
+    json += "\"" + k + "\":\"" + v + "\"";
+    first = false;
+  };
+
+  long rTemp = (m.sensors_pos.size() > 0) ? m.sensors_pos[0] : 0;
+  auto itR = m.sensors.find("roomTemp"); if (itR != m.sensors.end()) rTemp = itR->second;
+
+  long fTemp = (m.sensors_pos.size() > 1) ? m.sensors_pos[1] : 0;
+  auto itF = m.sensors.find("flame"); if (itF != m.sensors.end()) fTemp = itF->second;
+
+  long mState = (m.sensors_pos.size() > 31) ? m.sensors_pos[31] : 1;
+  auto itMS = m.sensors.find("mainState"); if (itMS != m.sensors.end()) mState = itMS->second;
+
+  long sState = (m.sensors_pos.size() > 32) ? m.sensors_pos[32] : 0;
+  auto itSS = m.sensors.find("subState"); if (itSS != m.sensors.end()) sState = itSS->second;
+
+  long pTotal = (m.sensors_pos.size() > 49) ? m.sensors_pos[49] : 0;
+  auto itPT = m.sensors.find("pelletsTotal"); if (itPT != m.sensors.end()) pTotal = itPT->second;
+
+  long pHours = (m.sensors_pos.size() > 47) ? m.sensors_pos[47] : 0;
+  auto itPH = m.sensors.find("pelletHours"); if (itPH != m.sensors.end()) pHours = itPH->second;
+
+  long sCount = (m.sensors_pos.size() > 50) ? m.sensors_pos[50] : 700;
+  auto itSC = m.sensors.find("serviceCountdown"); if (itSC != m.sensors.end()) sCount = itSC->second;
+
+  long idFan = (m.sensors_pos.size() > 9) ? m.sensors_pos[9] : 0;
+  auto itFan = m.sensors.find("idFanMeas"); if (itFan != m.sensors.end()) idFan = itFan->second;
+
+  // Clé 'f0' essentielle pour les configurations Home Assistant (value_json.f0)
+  addKV("f0", String(rTemp));
+  addKV("roomTemp", String(rTemp));
+  addKV("flameTemp", String(fTemp));
+  addKV("combustionChamberTemp", String(fTemp));
+  addKV("mainState", String(mState));
+  addKV("subState", String(sState));
+  addKV("feedRateTotal", String(pTotal));
+  addKV("pelletsTotal", String(pTotal));
+  addKV("runtimePellets", String(pHours));
+  addKV("pelletHours", String(pHours));
+  addKV("serviceCountdown", String(sCount));
+  addKV("serviceCountdownKg", String(sCount));
+  addKV("idFan", String(idFan));
+
+  // Contrôles en lecture
+  long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
+  auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
+  auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
+  auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
+  auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
+
+  addKV("stoveOnOff", String(curOn));
+  addKV("stoveOpMode", String(curMode));
+  addKV("stovePower", String(curStage));
+  addKV("stoveTempTarget", String(curRoom));
+
+  // Tous les autres capteurs nommés
+  for (const auto& kv : m.sensors) {
+    if (kv.first != "roomTemp" && kv.first != "flame" && kv.first != "mainState") {
+      addKV(kv.first.c_str(), String(kv.second));
+    }
+  }
+  json += "}";
+  web.send(200, "application/json", json);
+}
+
+// GET /api/controls & POST /api/controls (V2 JSON + legacy compat)
+static void handleApiControls() {
+  sendCors();
+  if (web.method() == HTTP_OPTIONS) { web.send(204); return; }
+
+  if (web.method() == HTTP_GET) {
+    const auto& m = g_link->model();
+    long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
+    auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
+    else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+    auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
+    else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+    auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
+    else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+    auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
+    else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+
+    const char* modeName = (curMode == 0) ? "manual" : ((curMode == 1) ? "auto" : "comfort");
+    float rTargetF = curRoom / 10.0f;
+
+    char buf[300];
+    snprintf(buf, sizeof(buf),
+      "{"
+      "\"on\":%s,"
+      "\"mode\":\"%s\","
+      "\"mode_code\":%ld,"
+      "\"target_temperature\":%.1f,"
+      "\"power_percent\":%ld,"
+      "\"onOff\":%ld,"
+      "\"operatingMode\":%ld,"
+      "\"heatingPower\":%ld,"
+      "\"tempRoomTarget\":%ld"
+      "}",
+      (curOn == 1) ? "true" : "false",
+      modeName, curMode, rTargetF, curStage,
+      curOn, curMode, curStage, curRoom
+    );
+    web.send(200, "application/json", buf);
+    return;
+  }
+
+  // POST / PUT : modification de consigne
+  String raw = web.hasArg("plain") ? web.arg("plain") : (web.hasArg("cmd") ? web.arg("cmd") : "");
+  long newOn = -1, newMode = -1, newStage = -1, newRoom = -1;
+
+  // 1) Analyse JSON
+  bool bVal = false;
+  if (findJsonBool(raw, "on", bVal) || findJsonBool(raw, "onOff", bVal)) {
+    newOn = bVal ? 1 : 0;
+  }
+  String sMode;
+  if (findJsonString(raw, "mode", sMode) || findJsonString(raw, "operatingMode", sMode)) {
+    sMode.toLowerCase();
+    if (sMode == "manual") newMode = 0;
+    else if (sMode == "auto") newMode = 1;
+    else if (sMode == "comfort") newMode = 2;
+  }
+  float fVal;
+  if (findJsonFloat(raw, "target_temperature", fVal) ||
+      findJsonFloat(raw, "temperature", fVal) ||
+      findJsonFloat(raw, "tempRoomTarget", fVal) ||
+      findJsonFloat(raw, "roomTarget", fVal)) {
+    newRoom = (fVal < 50.0f) ? (long)round(fVal * 10.0f) : (long)fVal;
+  }
+  if (findJsonFloat(raw, "power_percent", fVal) ||
+      findJsonFloat(raw, "power", fVal) ||
+      findJsonFloat(raw, "heatingPower", fVal) ||
+      findJsonFloat(raw, "targetStage", fVal)) {
+    newStage = (long)fVal;
+  }
+  if (newOn < 0 && (findJsonFloat(raw, "onOff", fVal) || findJsonFloat(raw, "on", fVal))) newOn = (long)fVal;
+  if (newMode < 0 && (findJsonFloat(raw, "mode", fVal) || findJsonFloat(raw, "operatingMode", fVal))) newMode = (long)fVal;
+
+  // 2) Form arguments / Query arguments
+  if (web.hasArg("on")) {
+    String s = web.arg("on");
+    newOn = (s == "true" || s == "1") ? 1 : 0;
+  }
+  if (web.hasArg("onOff")) newOn = web.arg("onOff").toInt();
+  if (web.hasArg("mode")) {
+    String s = web.arg("mode");
+    if (s == "manual") newMode = 0;
+    else if (s == "auto") newMode = 1;
+    else if (s == "comfort") newMode = 2;
+    else newMode = s.toInt();
+  }
+  if (web.hasArg("operatingMode")) newMode = web.arg("operatingMode").toInt();
+  if (web.hasArg("target_temperature")) {
+    float f = web.arg("target_temperature").toFloat();
+    newRoom = (f < 50.0f) ? (long)round(f * 10.0f) : (long)f;
+  }
+  if (web.hasArg("temperature")) {
+    float f = web.arg("temperature").toFloat();
+    newRoom = (f < 50.0f) ? (long)round(f * 10.0f) : (long)f;
+  }
+  if (web.hasArg("tempRoomTarget")) {
+    float f = web.arg("tempRoomTarget").toFloat();
+    newRoom = (f < 50.0f) ? (long)round(f * 10.0f) : (long)f;
+  }
+  if (web.hasArg("roomTarget")) {
+    float f = web.arg("roomTarget").toFloat();
+    newRoom = (f < 50.0f) ? (long)round(f * 10.0f) : (long)f;
+  }
+  if (web.hasArg("power_percent")) newStage = web.arg("power_percent").toInt();
+  if (web.hasArg("power")) newStage = web.arg("power").toInt();
+  if (web.hasArg("heatingPower")) newStage = web.arg("heatingPower").toInt();
+  if (web.hasArg("targetStage")) newStage = web.arg("targetStage").toInt();
+
+  // 3) Form single name/value (utilisé par steppers & sliders web UI)
+  if (web.hasArg("name") && web.hasArg("value")) {
+    String n = web.arg("name");
+    String v = web.arg("value");
+    if (n == "on" || n == "onOff") newOn = (v == "true" || v == "1") ? 1 : 0;
+    else if (n == "mode" || n == "operatingMode") {
+      if (v == "manual") newMode = 0;
+      else if (v == "auto") newMode = 1;
+      else if (v == "comfort") newMode = 2;
+      else newMode = v.toInt();
+    } else if (n == "roomTarget" || n == "target_temperature" || n == "temperature" || n == "tempRoomTarget" || n == "room") {
+      float f = v.toFloat();
+      newRoom = (f < 50.0f) ? (long)round(f * 10.0f) : (long)f;
+    } else if (n == "targetStage" || n == "power_percent" || n == "power" || n == "heatingPower" || n == "stage") {
+      newStage = v.toInt();
+    }
+  }
+
+  // 4) Format legacy point-virgule (si texte brut)
+  if (newOn < 0 && raw.indexOf("onOff=") >= 0) {
+    auto extract = [&](const String& key) -> long {
+      int idx = raw.indexOf(key + "=");
+      if (idx < 0) return -1;
+      int eq = raw.indexOf('=', idx);
+      if (eq < 0) return -1;
+      int sc = raw.indexOf(';', eq);
+      if (sc < 0) sc = raw.indexOf('&', eq);
+      if (sc < 0) sc = raw.length();
+      return raw.substring(eq + 1, sc).toInt();
+    };
+    newOn = extract("onOff");
+    if (newMode < 0) newMode = extract("operatingMode");
+    if (newStage < 0) newStage = extract("heatingPower");
+    if (newRoom < 0) newRoom = extract("tempRoomTarget");
+  }
+
+  // Récupérer les valeurs actuelles pour read-modify-write
+  const auto& m = g_link->model();
+  long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
+  auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
+  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+  auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
+  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+  auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
+  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+  auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
+  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+
+  long finalOn = (newOn >= 0) ? newOn : curOn;
+  long finalMode = (newMode >= 0) ? newMode : curMode;
+  long finalStage = (newStage >= 0) ? newStage : curStage;
+  long finalRoom = (newRoom >= 0) ? newRoom : curRoom;
+
+  std::vector<std::pair<std::string,long>> full;
+  full.push_back({"revision", (long)m.revision});
+  full.push_back({"onOff", finalOn});
+  full.push_back({"mode", finalMode});
+  full.push_back({"targetStage", finalStage});
+  full.push_back({"roomTarget", finalRoom});
+
+  g_link->applyControls(full);
+
+  const char* modeName = (finalMode == 0) ? "manual" : ((finalMode == 1) ? "auto" : "comfort");
+  float rTargetF = finalRoom / 10.0f;
+  char resBuf[300];
+  snprintf(resBuf, sizeof(resBuf),
+    "{"
+    "\"ok\":true,"
+    "\"on\":%s,"
+    "\"mode\":\"%s\","
+    "\"mode_code\":%ld,"
+    "\"target_temperature\":%.1f,"
+    "\"power_percent\":%ld"
+    "}",
+    (finalOn == 1) ? "true" : "false",
+    modeName, finalMode, rTargetF, finalStage
+  );
+  web.send(200, "application/json", resBuf);
+}
+
+// GET /log (compatibilité open-firenet)
+static void handleLog() {
+  sendCors();
+  web.send(200, "text/plain", g_recentLogs.length() ? g_recentLogs : "Pas de logs recents.\n");
+}
+
+// --------------------------------------------------------------------- setup
+void setup() {
+  DBG.begin(115200);
+  DBG.println("\n[Open-Firenet] boot");
+  buildNames();
+
+  // USB CDC avec les identifiants fixés AVANT begin
+  USB.VID(OPENFIRENET_USB_VID);
+  USB.PID(OPENFIRENET_USB_PID);
+  USB.manufacturerName("Open-Firenet");
+  USB.productName("Open-Firenet 2");
+  USB.serialNumber("23176212");
+  POELE.begin();                   // CDC TinyUSB vers le poêle
   USB.begin();
 
-  addLog("Bridge ready. Waiting for stove...");
-}
+  g_link = new firenet::DongleLink(txToStove, nowMs);
+  g_link->onDebug([](const char* dir, const std::string& f){
+    if (strcmp(dir, "drop") == 0) return;    // tracer rx ET tx (diagnostic trame)
+    DBG.printf("[%s %u] ", dir, (unsigned)f.size());
+    for (char c : f) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");
+                       else if (c>=32 && c<127) DBG.print(c); else DBG.print('.'); }
+    DBG.println();
+    logEntry(dir, f);
+  });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Boucle principale
-// ─────────────────────────────────────────────────────────────────────────────
-void loop() {
-  ArduinoOTA.handle();
-  server.handleClient();
-  unsigned long now = millis();
+  prefs.begin("firenet", true);
+  wifiSsid = prefs.getString("ssid", "");
+  wifiPass = prefs.getString("pass", "");
+  prefs.end();
 
-  // Reconnexion WiFi avec backoff exponentiel (5s→10s→20s→…→60s)
-  // Avoids flooding the AP and triggering its rate-limiter (reason=2 loop)
-  static bool wifiWas = false;
-  bool wifiNow = (WiFi.status() == WL_CONNECTED);
-  if (!wifiNow && !provisioningMode && wifiSsid.length() > 0
-      && wifiNextRetryMs > 0 && now >= wifiNextRetryMs) {
-    wifiNextRetryMs = 0;
-    addLog("WiFi retry (delay=" + String(wifiRetryDelayMs/1000) + "s) → WPA2/WPA3 connect");
+  if (wifiSsid.length()) {
+    g_isApMode = false;
+    g_staStart = millis();
+    // Connexion STA robuste — méthode open-firenet (fonctionne en coexistence USB
+    // natif TinyUSB) : power-save OFF, TX power max, config bas niveau + connect
+    // différé. WiFi.begin() seul échoue (status=6 / no assoc).
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    WiFi.mode(WIFI_STA);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t info){
+      if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+        DBG.printf("[wifi] DISCONNECTED reason=%d\n", info.wifi_sta_disconnected.reason);
+      else if (e == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+        g_staConnected = true;
+        DBG.printf("[wifi] GOT_IP %s\n", WiFi.localIP().toString().c_str());
+      }
+    });
     WiFi.setTxPower(WIFI_POWER_17dBm);
     esp_wifi_set_max_tx_power(68);
-    addLog("WiFi retry MAC: " + WiFi.macAddress());
     {
       wifi_config_t conf = {};
-      memcpy(conf.sta.ssid,     wifiSsid.c_str(), min(wifiSsid.length(), (size_t)32));
-      memcpy(conf.sta.password, wifiPass.c_str(), min(wifiPass.length(), (size_t)64));
-      conf.sta.threshold.authmode  = WIFI_AUTH_OPEN;
-      conf.sta.pmf_cfg.capable     = true;
-      conf.sta.pmf_cfg.required    = false;
+      memcpy(conf.sta.ssid,     wifiSsid.c_str(), min((size_t)wifiSsid.length(), (size_t)32));
+      memcpy(conf.sta.password, wifiPass.c_str(), min((size_t)wifiPass.length(), (size_t)64));
+      conf.sta.threshold.authmode = WIFI_AUTH_OPEN;
+      conf.sta.pmf_cfg.capable    = true;
+      conf.sta.pmf_cfg.required   = false;
       esp_wifi_set_config(WIFI_IF_STA, &conf);
     }
     esp_wifi_set_max_tx_power(68);
-    wifiConnectPendingAt = millis() + 500;  // non-blocking delay before connect
+    g_wifiConnectAt = millis() + 500;   // connect différé (laisse le driver se poser)
+    DBG.printf("[wifi] STA (background) -> %s\n", wifiSsid.c_str());
+  } else {
+    startApMode();
   }
-  // Deferred connect (500ms after stop/start to let driver settle)
-  if (wifiConnectPendingAt > 0 && now >= wifiConnectPendingAt) {
-    wifiConnectPendingAt = 0;
+
+  ArduinoOTA.setHostname("open-firenet");
+  ArduinoOTA.begin();
+
+  if (MDNS.begin("open-firenet")) {
+    MDNS.addService("http", "tcp", 80);
+    DBG.println("[mdns] http://open-firenet.local");
+  }
+
+  web.enableCORS(true);
+  web.on("/", handleRoot);
+  web.on("/api/state", handleState);
+  web.on("/api/control", handleApiControls);
+  web.on("/api/controls", handleApiControls);
+  web.on("/api/restart", handleRestart);
+  web.on("/restart", handleRestart);
+  web.on("/api/arm", handleArm);
+  web.on("/api/wifi", HTTP_POST, handleWifi);
+  web.on("/api/forget", HTTP_POST, handleForget);
+  web.on("/api/scan", handleScan);
+
+  // Détection Portail Captif (iOS, Android, Windows)
+  web.on("/hotspot-detect.html", handleCaptiveRedirect);
+  web.on("/library/test/success.html", handleCaptiveRedirect);
+  web.on("/generate_204", handleCaptiveRedirect);
+  web.on("/gen_204", handleCaptiveRedirect);
+  web.on("/connecttest.txt", handleCaptiveRedirect);
+  web.on("/ncsi.txt", handleCaptiveRedirect);
+
+  web.onNotFound([](){
+    if (g_isApMode) {
+      handleCaptiveRedirect();
+      return;
+    }
+    web.send(404, "text/plain", "Not Found");
+  });
+
+  // Routes compatibilité open-firenet & Home Assistant
+  web.on("/api/status", handleApiStatus);
+  web.on("/api/sensors", handleApiSensors);
+  web.on("/reset-wifi", handleForget);
+  web.on("/log", handleLog);
+
+  web.begin();
+  DBG.println("[web] démarré (avec portail captif + compatibilité open-firenet)");
+}
+
+// Mode chasse PRIO2 : pompe GET_REVISION + TRANSFER_COMPLETED en continu, SANS
+// nommer de capteurs, pour laisser le poêle émettre ses trames curées (PRIO2).
+// On compte les GET_REVISION pour corréler le déclenchement.
+#define HUNT_PRIO2 0
+static uint32_t g_grCount = 0;
+
+// ---------------------------------------------------------------------- loop
+static uint32_t lastPoll = 0;
+void loop() {
+  // 0) connect WiFi différé (laisse le driver se poser après config bas niveau)
+  if (g_wifiConnectAt && millis() >= g_wifiConnectAt) {
+    g_wifiConnectAt = 0;
     esp_wifi_connect();
+    DBG.println("[wifi] esp_wifi_connect()");
   }
-  if (wifiNow && !wifiWas) {
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    wifiSsidHex = ssidToHex(wifiSsid);
-    if (!ntpDone) startNTP();
-    if (MDNS.begin("open-firenet"))
-      addLog("mDNS: http://open-firenet.local");
-    if (!serverStarted) { server.begin(); serverStarted = true; addLog("HTTP server started"); }
-    addLog("WiFi connected: " + WiFi.localIP().toString() + " RSSI=" + String(WiFi.RSSI()) + "dBm");
-    // Notify the stove immediately (symbol=4 connected) without waiting for the keepalive 30s
-    if (mainLoopActive && rtcSynced) {
-      sendGetCDCStatus(true);
-      lastCDCKeepaliveMs = now;
+
+  // Secours : si échec de connexion STA après 20s, basculer en AP pour permettre la configuration
+  if (!g_isApMode && !g_staConnected && g_staStart && (millis() - g_staStart > 20000)) {
+    DBG.println("[wifi] Échec connexion STA (20s) -> Démarrage AP de secours");
+    g_staStart = 0;
+    startApMode();
+  }
+
+  if (g_isApMode) {
+    dnsServer.processNextRequest();
+  }
+
+  // 1) drainer le CDC entrant (poêle -> nous)
+  while (POELE.available()) g_link->onByte((uint8_t)POELE.read());
+  g_link->poll();
+
+#if HUNT_PRIO2
+  if (g_link->model().version_ack) {
+    static bool precond = false;
+    if (!precond) {
+      // pré-condition (§6.3 l.465) : GET_CONTROLS ET GET_SENSORS reçus >=1 fois
+      g_link->requestStatus();
+      g_link->pollControls({});          // GET_CONTROLS=0 (vide)
+      g_link->pollSensors({});           // GET_SENSORS=0 (vide) -> laisse le poêle libre
+      precond = true;
+    } else if (g_link->txIdle()) {
+      // pompe : GR incrémente sensor_prio2_cnt ; TC draine les POST en attente.
+      if (WiFi.status() == WL_CONNECTED) g_link->setRssi(WiFi.RSSI());
+      g_link->sendRevision();
+      g_link->transferCompleted();
+      g_link->transferCompleted();
+      g_grCount++;
+      // relance périodiquement le slot status (~toutes les 40 pompes)
+      if (g_grCount % 40 == 0) g_link->requestStatus();
     }
   }
-  wifiWas = wifiNow;
+#else
+  // 2) cycle de lecture périodique une fois la version acquittée
+  if (g_link->model().version_ack && g_link->txIdle() && millis() - lastPoll > 2000) {
+    lastPoll = millis();
+    if (WiFi.status() == WL_CONNECTED) g_link->setRssi(WiFi.RSSI());  // RSSI réel (§7.4)
 
-  // Heartbeat
-  if (now - lastHeartbeatMs >= 10000) {
-    lastHeartbeatMs = now;
-    addLog("--- alive loop=" + String(mainLoopActive) +
-           " prov=" + String(provisioningMode) +
-           " wifi=" + String(wifiNow) +
-           " wst=" + String(WiFi.status()) + " ---");
-  }
-
-  // Phase 2 step 1: GET (full if credentials stored, blank in provisioning)
-  // In provisioning mode we still send Phase 2 so the stove can
-  // trigger a WiFi scan (scan_command=1) and send its credentials.
-  if (phase1SentAt > 0 && phase2GetSentAt == 0 && !phase2Done && now - phase1SentAt >= 1000) {
-    phase2GetSentAt = now;
-    bool full = !provisioningMode;  // full as soon as credentials are stored
-    addLog("--- Phase 2 step 1: GET " + String(full?"full":"blank(prov)") + " ---");
-    sendGetCDCStatus(full);
-  }
-
-  // Phase 2 step 2: POST (full if credentials stored, blank in provisioning) 300 ms after GET
-  if (phase2GetSentAt > 0 && !phase2Done && now - phase2GetSentAt >= 300) {
-    phase1SentAt = 0; phase2GetSentAt = 0; phase2Done = true;
-    bool full = !provisioningMode;
-    addLog("--- Phase 2 step 2: POST " + String(full?"full":"blank(prov)") + " ---");
-    sendPostCDCStatus(full);
-  }
-
-  // OK + MAIN LOOP 600 ms after Phase 2 echo
-  if (phase2EchoAt > 0 && !mainLoopActive && now - phase2EchoAt >= 600) {
-    phase2EchoAt = 0; mainLoopActive = true;
-    lastPollMs = now; lastSensorPollMs = now;
-    addLog("--- ACK OK → MAIN LOOP ---");
-    sendRaw("OK\r\n");
-  }
-
-  // RTC + init
-  if (mainLoopActive && !rtcSynced) {
-    rtcSynced = true; lastCDCKeepaliveMs = now;
-    String ts = buildRTCTimestamp();
-    addLog("--- RTC: " + ts.substring(0, ts.indexOf('\r')));
-    sendStove(ts);
-    delay(200);
-    sendRaw("GET_NETWORKS_FINISHED\n");
-    addLog(">>> GET_NETWORKS_FINISHED (init)");
-  }
-
-  // CDC keepalive every 5 s — fast scan_command detection
-  // Provisioning: POST blank → stove echoes stored credentials → extract
-  // Connected   : GET+POST full → stove echoes POST_CDCDEVICE_STATUS with scan_command
-  if (mainLoopActive && rtcSynced && now - lastCDCKeepaliveMs >= 5000) {
-    lastCDCKeepaliveMs = now;
-    if (provisioningMode) {
-      sendPostCDCStatus(false);
-      drainFor(300);
+    static bool controlsRegistered = false;
+    if (g_link->model().sensors_pos.size() < 50) {
+      // Phase 1 : enregistrer la table complète de 53 capteurs dans le poêle
+      g_link->pollSensors(SENSOR_NAMES);
+    } else if (!controlsRegistered) {
+      // Phase 2 : enregistrer la table des controls
+      g_link->pollControls(CONTROL_NAMES);
+      controlsRegistered = true;
     } else {
-      sendGetCDCStatus(true);
-      delay(50);
-      sendPostCDCStatus(true);
-      drainFor(500);
+      // Phase 3 : routine d'interrogation cadencée
+      g_link->requestStatus();
+      g_link->sendRevision();
+      g_link->transferCompleted();
+      g_link->transferCompleted();
     }
   }
+#endif
 
-  // Re-arm controls (after setpoint change from web UI)
-  if (mainLoopActive && rtcSynced && needsRearm) {
-    needsRearm = false; lastPollMs = now;
-    pendingControlsWrite = true;
-    prefs.putString("ctrl", desiredControls);
-    sendRaw("GET_NETWORKS_FINISHED\n");
-    addLog("--- Re-arm controls ---");
-  }
-
-  // WiFi scan (triggered by scan_command=1 in the stove echo)
-  // Works even without a WiFi connection (scanning does not require association).
-  if (scanRequested && !scanBusy) {
-    if (cachedNetworksMsg.length() > 0) {
-      // Cache available → immediate response, no scan wait
-      scanRequested = false;
-      addLog("--- WiFi scan: cache available → sending immediately ---");
-      sendRaw(cachedNetworksMsg);
-      addLog(">>> GET_NETWORKS=1; (cached)");
-      scanAwaitingGNF = true;  // attendre GNF du stove pour envoyer sym=7
-      // Start a background scan to refresh the cache
-      WiFi.scanNetworks(true);
-      scanBusy = true;
-    } else {
-      // Pas de cache → scan classique
-      addLog("--- WiFi scan ---");
-      WiFi.mode(WIFI_STA);
-      WiFi.scanNetworks(true);
-      scanBusy = true;
-    }
-  }
-  if (scanBusy) {
-    int n = WiFi.scanComplete();
-    if (n >= 0) {
-      scanBusy = false;
-      lastProactiveScanMs = now;
-      if (!mainLoopActive || !rtcSynced) {
-        WiFi.scanDelete();
-        addLog("Scan: " + String(n) + " networks — main loop not ready, ignored");
-      } else {
-        addLog("Scan: " + String(n) + " networks");
-        int cnt = min(n, 16);
-        String msg = "GET_NETWORKS=1;\n";
-        for (int i = 0; i < cnt; i++) {
-          String ssid = WiFi.SSID(i);
-          String hex;
-          for (int j = 0; j < (int)ssid.length(); j++) {
-            char b[3]; sprintf(b, "%02X", (uint8_t)ssid[j]); hex += b;
-          }
-          msg += hex + "=" + String(WiFi.RSSI(i)) + "\n";
-          addLog("  " + String(i) + ": " + ssid + " (" + String(WiFi.RSSI(i)) + "dBm)");
-        }
-        WiFi.scanDelete();
-        cachedNetworksMsg = msg;  // cache for immediate future responses
-        if (scanRequested) {
-          // scan triggered by scan_command=1 → send now
-          scanRequested = false;
-          sendRaw(msg);
-          addLog(">>> GET_NETWORKS=1; (" + String(cnt) + " networks) [from active scan]");
-          scanAwaitingGNF = true;  // attendre GNF du stove pour envoyer sym=7
-        } else {
-          addLog("Proactive scan: cache updated (" + String(cnt) + " networks)");
-        }
-      }
-    } else if (n == WIFI_SCAN_FAILED) {
-      scanBusy = false;
-      addLog("Scan FAIL");
-    }
+  // 3) battement de cœur sur le port COM (diagnostic terrain)
+  static uint32_t lastBeat = 0;
+  if (millis() - lastBeat > 3000) {
+    lastBeat = millis();
+    const auto& m = g_link->model();
+    DBG.printf("[hb] ack=%d gen=%d in=%u out=%u rev=%ld sensors=%u controls=%u rssi=%d\n",
+               m.version_ack, m.generation, m.frames_in, m.frames_out,
+               (long)m.revision, (unsigned)m.sensors.size(),
+               (unsigned)m.controls.size(),
+               WiFi.status()==WL_CONNECTED ? WiFi.RSSI() : 0);
+    DBG.printf("[hb] dropped=%u cdc_connected=%d txfree=%d grCount=%u\n",
+               (unsigned)g_link->dropped(), (bool)POELE, POELE.availableForWrite(),
+               (unsigned)g_grCount);
+    DBG.printf("[wifi] status=%d ip=%s rssi=%d ssid=%s\n",
+               (int)WiFi.status(), WiFi.localIP().toString().c_str(),
+               (int)WiFi.RSSI(), WiFi.SSID().c_str());
+    // dump positionnel brut : index=valeur, pour calibrer §14 sur poêle réel
+    DBG.printf("[sp] n=%u:", (unsigned)m.sensors_pos.size());
+    for (size_t i = 0; i < m.sensors_pos.size(); i++) DBG.printf(" %u=%ld", (unsigned)i, m.sensors_pos[i]);
+    DBG.printf("\n[cp] n=%u:", (unsigned)m.controls_pos.size());
+    for (size_t i = 0; i < m.controls_pos.size(); i++) DBG.printf(" %u=%ld", (unsigned)i, m.controls_pos[i]);
+    DBG.print("\n");
   }
 
-  // Scan proactif toutes les 30 s pour avoir un cache frais
-  if (mainLoopActive && rtcSynced && !scanBusy &&
-      now - lastProactiveScanMs >= 30000) {
-    lastProactiveScanMs = now;
-    WiFi.scanNetworks(true);
-    scanBusy = true;
-    addLog("--- Proactive scan ---");
-  }
-
-  // Poll toutes les 15 s (backup si le stove n'envoie pas GET_NETWORKS_FINISHED)
-  if (mainLoopActive && lastPollMs > 0 && now - lastPollMs >= 15000) {
-    lastPollMs = now; lastSensorPollMs = now;
-    pollInProgress = true;
-    sendRaw("GET_NETWORKS_FINISHED\n");
-    drainFor(300);
-    pendingControlsWrite = false;
-    sendGetControls();
-    delay(50);
-    sendStove("GET_REVISION=0; revision=12201; frequency=30; \n");
-    sendStove(buildGetSensors());
-    drainFor(100);
-    sendRaw("TRANSFER_COMPLETED\n");
-    drainFor(2000);
-    sendRaw("TRANSFER_COMPLETED\n");
-    drainFor(500);
-    pollInProgress = false;
-  }
-
-  // Commandes PC via Serial (ttyACM0) : SETWIFI:ssid:pass
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    if (cmd.startsWith("SETWIFI:")) {
-      int c1 = cmd.indexOf(':', 8);
-      if (c1 > 8) {
-        String ssid = cmd.substring(8, c1);
-        String pass = cmd.substring(c1 + 1);
-        String hex;
-        for (int i = 0; i < (int)ssid.length(); i++) {
-          char b[3]; sprintf(b, "%02X", (uint8_t)ssid[i]); hex += b;
-        }
-        addLog("SETWIFI cmd: ssid=\"" + ssid + "\" pass=" + String(pass.length()) + "c");
-        saveAndConnect(hex, pass, stoveId.length() ? stoveId : "3", stoveToken.length() ? stoveToken : "");
-      }
-    }
-  }
-
-  // Lecture USB CDC
-  if (USBSerial.available()) {
-    USBSerial.setTimeout(50);
-    String raw = USBSerial.readStringUntil('\n');
-    rawLog('R', raw);
-    while (raw.length() > 0 &&
-           (raw[raw.length()-1]=='\r' || raw[raw.length()-1]==';' || raw[raw.length()-1]==' '))
-      raw.remove(raw.length()-1);
-    processStoveCommand(raw);
-    while (USBSerial.available()) {
-      String extra = USBSerial.readStringUntil('\n');
-      rawLog('R', extra);
-      while (extra.length() > 0 &&
-             (extra[extra.length()-1]=='\r' || extra[extra.length()-1]==';' || extra[extra.length()-1]==' '))
-        extra.remove(extra.length()-1);
-      processStoveCommand(extra);
-    }
-  }
+  ArduinoOTA.handle();
+  web.handleClient();
 }

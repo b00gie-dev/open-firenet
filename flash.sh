@@ -11,19 +11,21 @@ Usage: $(basename "$0") [OPTIONS] [PORT]
 Flash the Open Firenet firmware onto an ESP32-S3.
 
 Arguments:
-  PORT              Serial port of the ESP32-S3 (default: /dev/ttyACM0)
+  PORT              Serial port of the ESP32-S3 (default: auto-detected)
 
 Options:
   -h, --help        Show this help message and exit
-  --ota <ip>        Flash via WiFi OTA instead of serial (requires curl)
+  --build           Compile only, do not flash
+  --ota <ip>        Flash via WiFi ArduinoOTA instead of serial
 
 Examples:
-  $(basename "$0")                    Flash via serial /dev/ttyACM0
-  $(basename "$0") /dev/ttyACM1      Flash via a specific serial port
-  $(basename "$0") --ota 192.168.1.x  Flash via WiFi OTA
+  $(basename "$0")                    Flash via serial (auto-detect port)
+  $(basename "$0") /dev/ttyACM1       Flash via a specific serial port
+  $(basename "$0") --build            Compile check only
+  $(basename "$0") --ota 192.168.1.93 Flash via WiFi OTA
 
 Notes:
-  - Requires: arduino-cli, esptool (serial mode) or curl (OTA mode)
+  - Requires: arduino-cli, esptool (serial) or python3 (OTA)
   - Only bootloader + partition table + app are flashed in serial mode.
     The NVS partition (0x9000) is left untouched — WiFi credentials survive.
   - The port is released automatically if held by another process.
@@ -31,11 +33,21 @@ EOF
 }
 
 OTA_IP=""
-PORT="/dev/ttyACM0"
+BUILD_ONLY=0
+PORT=""
+
+detect_port() {
+  for p in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyCH343USB0; do
+    [ -e "$p" ] && { echo "$p"; return; }
+  done
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --build)
+      BUILD_ONLY=1
+      ;;
     --ota)
       shift
       OTA_IP="${1:?--ota requires an IP address}"
@@ -52,36 +64,52 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-BUILD_DIR="$(dirname "$0")/.build"
+[ -z "$PORT" ] && PORT="$(detect_port)"
 
-echo "=== Open Firenet flash ==="
-if [[ -n "$OTA_IP" ]]; then
-  echo "Mode   : OTA (WiFi)"
-  echo "Target : http://$OTA_IP/update"
+BUILD_DIR="$(dirname "$0")/.build"
+FQBN="esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,FlashSize=4M,PartitionScheme=min_spiffs"
+
+echo "=== Open Firenet ==="
+if [[ "$BUILD_ONLY" -eq 1 ]]; then
+  echo "Mode   : Build only"
+elif [[ -n "$OTA_IP" ]]; then
+  echo "Mode   : OTA (WiFi ArduinoOTA)"
+  echo "Target : $OTA_IP:3232"
 else
   echo "Mode   : Serial"
-  echo "Port   : $PORT"
+  echo "Port   : ${PORT:-<none detected>}"
 fi
-echo "Board  : ESP32-S3"
+echo "Board  : ESP32-S3 (min_spiffs OTA partition)"
 echo ""
 
 # Compile
 echo "[1/2] Compiling..."
 arduino-cli compile \
-  --fqbn esp32:esp32:esp32s3:CDCOnBoot=default,FlashSize=4M,PartitionScheme=default,PSRAM=disabled \
+  --fqbn "$FQBN" \
   --output-dir "$BUILD_DIR" \
   "$(dirname "$0")/open-firenet/open-firenet.ino"
 
+if [[ "$BUILD_ONLY" -eq 1 ]]; then
+  echo "Build successful. Output in $BUILD_DIR"
+  exit 0
+fi
+
 if [[ -n "$OTA_IP" ]]; then
-  # OTA flash via HTTP upload
-  echo "[2/2] Flashing via OTA → http://$OTA_IP/update ..."
-  curl -s -X POST "http://$OTA_IP/update" \
-    -F "firmware=@$BUILD_DIR/open-firenet.ino.bin" \
-    --progress-bar \
-    -w "\n"
+  echo "[2/2] Flashing via ArduinoOTA → $OTA_IP ..."
+  ESPOTA="$(find "$HOME/.arduino15/packages/esp32" -name espota.py 2>/dev/null | sort -V | tail -n 1)"
+  if [[ -z "$ESPOTA" ]]; then
+    echo "Error: espota.py not found in arduino15 packages." >&2
+    exit 1
+  fi
+  python3 "$ESPOTA" -i "$OTA_IP" -f "$BUILD_DIR/open-firenet.ino.bin" -r
   echo ""
-  echo "Done. Device is rebooting — watch the serial monitor at 115200 baud."
+  echo "Done. Device is rebooting."
 else
+  if [[ -z "$PORT" ]]; then
+    echo "Error: No serial port specified or detected." >&2
+    exit 1
+  fi
+
   # Release port if held
   fuser -k "$PORT" 2>/dev/null || true
   sleep 1

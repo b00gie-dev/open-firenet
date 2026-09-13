@@ -1,7 +1,13 @@
 # RIKA Firenet 2.0 — USB CDC Protocol
 
-Reverse-engineered protocol for the RIKA Firenet 2.0 WiFi dongle.  
-All findings are empirically confirmed against live stove logs or binary analysis of the official firmware (DOMO AVR32 v2.29.585.12 and WifiUpdateCustomer V2.0.0.15).
+Reverse-engineered protocol for the RIKA Firenet 2.0 WiFi dongle, as understood from
+live testing against a real stove (RIKA DOMO, firmware V2.29.585.12) and analysis of
+the official firmware.
+
+This document describes the protocol as we understand it — the wire format, the
+message flow, and the behaviours you must reproduce for a stove to accept a
+replacement dongle. Everything below has been observed on a real stove unless marked
+otherwise.
 
 ---
 
@@ -9,16 +15,28 @@ All findings are empirically confirmed against live stove logs or binary analysi
 
 - **Interface**: USB CDC (Abstract Control Model)
 - **VID / PID**: `0x303A` / `0x819A`
-- **USB roles**: Stove = USB host · Dongle = USB device
-- **Framing**: ASCII lines terminated with `\n` or `\r\n`
+- **USB roles**: stove = USB **host**, dongle = USB **device**
 - **Encoding**: 7-bit ASCII; numeric values as decimal strings
+- **Framing**: ASCII, delimiter-based (`=`, `;`, space). Lines are grouped into a
+  frame by a short period of silence on the link.
+
+Two low-level details matter and are easy to get wrong:
+
+1. **The stove never asserts DTR.** An Arduino-style `USBSerial.write()` that gates on
+   `tud_cdc_n_connected()` will send nothing and the stove will just keep probing.
+   Write straight to the TinyUSB FIFO instead.
+2. **Send large frames in small chunks (see “USB framing” below).** A single big
+   write is rejected by the stove's USB host.
 
 ---
 
 ## Handshake sequence
 
-### 1. USB reset (stove-initiated)
-The stove sends a `\x16` (SYN) byte to reset the dongle state machine.
+### 1. USB reset probe (stove-initiated)
+
+The stove repeatedly sends a 2-byte probe — `0x16` (SYN) followed by the ASCII
+character `3` — roughly every 100 ms until the dongle answers acceptably. The trailing
+`3` selects the “version 3” variant of the handshake.
 
 **Dongle → Stove:**
 ```
@@ -30,56 +48,36 @@ GET_CDCDEVICE3_VERSION=0; BL=999; APP=201; REV=12201; DT=3;
 GET_CDCDEVICE_VERSION_FINISHED
 ```
 
----
+`BL` / `APP` / `REV` are the dongle's own firmware version numbers; `DT=3` is the
+device type. These values do **not** decide whether the handshake is accepted — a
+DOMO 2.29 finishes the handshake with `BL=112` and `BL=999` alike. Their real use is
+the firmware-update check (a high `BL` such as `999` tells the stove/cloud the dongle
+is up to date, so it never tries to push an OTA firmware onto it).
 
-### 2. Phase 1 — Initial announcement
-Dongle announces itself with blank credentials (no WiFi info yet).  
-Sent as a single atomic block:
+If the stove keeps re-sending the `0x16 3` probe and never sends
+`GET_CDCDEVICE_VERSION_FINISHED`, the reply is either not reaching it (framing / DTR)
+or its firmware family expects a different reply — this has been seen on non-DOMO
+models (e.g. Induo) and is not yet solved.
 
-**Dongle → Stove:**
-```
-POST_CDCDEVICE_STATUS=0;
-<20 fields — see CDC status fields below, all blank>
--------
-GET_CDCDEVICE_STATUS=0;
-<20 fields — blank>
-0
-0
-0
-```
+### 2. Announcement (blank status)
 
-**Expected stove response:** Two echoes of `POST_CDCDEVICE_STATUS` (the stove echoes back its own CDC status).
+Once the version is acknowledged, the stove pushes an initial
+`POST_CDCDEVICE_STATUS`. The dongle answers with a `GET_CDCDEVICE_STATUS` carrying
+blank credentials while unprovisioned, or full credentials once connected (see below).
 
----
+### 3. Main loop
 
-### 3. Phase 2 — Authentication (1 000 ms after Phase 1)
-
-**Step 1 (t = 0):** `GET_CDCDEVICE_STATUS=0;` with **full** fields (id, token, SSID, IP, MAC, RSSI) if WiFi credentials are available; blank fields if in provisioning mode.
-
-**Step 2 (t = 300 ms):** `POST_CDCDEVICE_STATUS=0;` with full/blank fields (same rule).
-
-**Expected stove response:** Echo of `POST_CDCDEVICE_STATUS` → `-------` → `OK`
-
----
-
-### 4. Main loop entry
-
-On receiving `OK` from the stove:
-
-**Dongle → Stove:**
-```
-OK
-START_YYYYMMDD_HHMMSS;    (RTC timestamp)
-GET_NETWORKS_FINISHED     (triggers first poll cycle)
-```
+From there the dongle drives a periodic poll cycle and a keepalive. There is no
+persistent authentication step; the stove is purely reactive.
 
 ---
 
 ## CDC status fields (20 fields, `\n`-separated)
 
-Sent in both `POST_CDCDEVICE_STATUS` and `GET_CDCDEVICE_STATUS`.
+Sent in both `POST_CDCDEVICE_STATUS` (stove → dongle) and `GET_CDCDEVICE_STATUS`
+(dongle → stove).
 
-| # | Name | Blank | Full |
+| # | Name | Blank | Full (connected) |
 |---|---|---|---|
 | 1 | monitoring | `0` | `0` |
 | 2 | on_off | `1` | `1` |
@@ -92,208 +90,248 @@ Sent in both `POST_CDCDEVICE_STATUS` and `GET_CDCDEVICE_STATUS`.
 | 9 | app_version | `201` | `201` |
 | 10 | app_revision | `12201` | `12201` |
 | 11 | spwf_version | `0` | `229` |
-| 12 | rssi | `0` | RSSI dBm |
+| 12 | rssi | `0` | RSSI in dBm |
 | 13 | id | `` | stove ID |
 | 14 | token | `` | stove token |
 | 15 | protocol | `3` | `3` |
 | 16 | ssid | `` | SSID as hex string |
-| 17 | wpa2 | `` | WiFi password |
+| 17 | wpa2 | `` | WiFi password (plaintext) |
 | 18 | ip | `` | dongle IP |
 | 19 | mac | `` | dongle MAC |
 | 20 | cdc_device | `1` | `1` |
 
-`GET_CDCDEVICE_STATUS` has 3 additional OTA fields (`0\n0\n0\n`) after field 20.  
-`POST_CDCDEVICE_STATUS` is terminated with `-------\n`.
+`GET_CDCDEVICE_STATUS` (dongle → stove) has 3 extra OTA fields (`0\n0\n0\n`) after
+field 20. `POST_CDCDEVICE_STATUS` (stove → dongle) is terminated with `-------\n`.
 
-**Symbol values:**
+**`symbol` values** — the WiFi icon shown on the stove panel:
 
 | Value | Meaning |
 |---|---|
 | 4 | WiFi connected |
-| 5 | WiFi disconnected / provisioning |
-| 7 | WiFi scan complete — triggers network list display on stove panel |
+| 5 | WiFi disconnected / provisioning (grey + red cross) |
+| 7 | WiFi scan complete — triggers the network-list display on the panel |
+
+Note: `initialised` and `symbol` are recomputed by the stove according to its own view
+of the connection; pushing `symbol=4` / `initialised=1` does not by itself make the
+stove report “connected”. It does, however, adopt values such as `rssi`, `ssid` and
+`wpa2` from what the dongle pushes.
 
 ---
 
 ## Poll cycle
 
-Triggered by `GET_NETWORKS_FINISHED` (either sent by the dongle itself, or received from the stove). Repeats every ~30 s.
+Once the version is acknowledged, the dongle runs a periodic cycle (~every 2 s works;
+the official firmware uses ~30 s). Each cycle it registers what it wants to read, then
+flushes the stove's response queues:
 
 ```
-Dongle → Stove : GET_CONTROLS=1; onOff=12201; operatingMode=<onOff>; heatingPower=<opMode>; tempRoomTarget=<power>;
-                 =<tempRoomTarget>;
-[50 ms pause]
-Dongle → Stove : GET_REVISION=0; revision=12201; frequency=30;
-                 GET_SENSORS=0;
-[100 ms drain]
+Dongle → Stove : GET_CONTROLS=0; <control names...>
+Dongle → Stove : GET_SENSORS=0; <sensor names...>
+Dongle → Stove : GET_REVISION=<rssi>; revision=<rev>; frequency=<freq>;
 Dongle → Stove : TRANSFER_COMPLETED
-[2 000 ms drain]
 Dongle → Stove : TRANSFER_COMPLETED
-[500 ms drain]
 ```
+
+`GET_REVISION` is mandatory before `TRANSFER_COMPLETED` — without it the stove's
+response slots are never armed and `TRANSFER_COMPLETED` returns nothing. The stove
+ignores the `revision=` and `frequency=` values themselves; only the presence of the
+command matters.
 
 ---
 
 ## GET_CONTROLS / POST_CONTROLS
 
-### Sending controls (dongle → stove)
+Controls are read and written positionally. The stove keeps a small set of core
+controls (revision, on/off, mode, target stage, room target). A nameless read returns
+them positionally:
 
 ```
-GET_CONTROLS=1; onOff=12201; operatingMode=<onOff>; heatingPower=<opMode>; tempRoomTarget=<power>;
-=<tempRoomTarget>;
+POST_CONTROLS=0; =<revision>; =<onOff>; =<mode>; =<stage>; =<roomTarget>;
 ```
 
-**Field mapping (shifted format)** — the official firmware always sends fields shifted by one position, with `12201` as an artefact in the `onOff` slot:
-
-| Wire field name | Actual value |
-|---|---|
-| `onOff` | always `12201` (artefact) |
-| `operatingMode` | desired `onOff` (0 or 1) |
-| `heatingPower` | desired `operatingMode` |
-| `tempRoomTarget` | desired `heatingPower` |
-| `=N;` (line 2) | desired `tempRoomTarget` (×10) |
-
-### Stove echo (POST_CONTROLS)
-
-The stove replies with its own stored values using the same shifted format:
+To **write**, send `GET_CONTROLS=1;` with the full set of values (read-modify-write:
+start from the last values read, change only what you need):
 
 ```
-POST_CONTROLS=0; onOff=12201; operatingMode=<onOff>; heatingPower=<opMode>; tempRoomTarget=<power>;
-=<tempRoomTarget>;
+GET_CONTROLS=1; revision=<rev>; onOff=<v>; mode=<v>; targetStage=<v>; roomTarget=<v>;
 ```
 
-**Important:** `GET_CONTROLS` takes effect on the stove (observed empirically — stove starts/stops). The `POST_CONTROLS` echo does **not** reflect the values just written; it returns independently stored values. The exact storage mechanism is unknown.
+**Parse by position, not by name.** A leading artefact value (the revision) can shift
+the apparent field names by one; always read the values in order and ignore the names.
 
-**Parse by position, not by field name** — the field names in POST_CONTROLS are shifted and misleading.
+`GET_CONTROLS=1` takes effect on the stove (confirmed — it actually starts/stops and
+changes setpoint). The `POST_CONTROLS` echo returns the stove's stored values, which
+may lag what was just written.
 
-### Controls fields
+### Control fields
 
-| Field | Range | Notes |
-|---|---|---|
-| `onOff` | 0 / 1 | 0 = off, 1 = on |
-| `operatingMode` | 0–3 | 0=Manual, 1=Auto/thermostat, 2=Comfort, 3=Setback |
-| `heatingPower` | 30–100 | % (label: `[30-100]`) |
-| `tempRoomTarget` | 140–280 | ×10 — 210 = 21.0 °C |
+| Position | Field | Range | Notes |
+|---|---|---|---|
+| 0 | revision | — | stove config revision |
+| 1 | onOff | 0 / 1 | 0 = off, 1 = on |
+| 2 | mode | 0–3 | 0 = Manual, 1 = Auto/thermostat, 2 = Comfort, 3 = Setback |
+| 3 | targetStage | 30–100 | heating power, % |
+| 4 | roomTarget | 140–280 | room target ×10 (210 = 21.0 °C) |
 
 ---
 
 ## GET_SENSORS / POST_SENSORS
 
-### Request
+This is the part that unlocks the full stove telemetry, and where the mechanism is
+most easily misunderstood.
+
+### The key rule: the stove emits one sensor slot per name you register
+
+The stove holds an internal array of sensors (up to ~88 slots). When you send
+`GET_SENSORS`, it records **how many names you provided** and, when it later builds
+`POST_SENSORS`, it emits exactly those slots — positionally, in index order — echoing
+the names you sent back:
+
 ```
-GET_SENSORS=0;
+GET_SENSORS=0; s0=0; s1=0; s2=0; ... s52=0;
+→ POST_SENSORS=0; s0=<v0>; s1=<v1>; ... s52=<v52>;
 ```
 
-### Response
-The stove sends fields positionally, one per line, no field names:
+Consequences:
 
-```
-POST_SENSORS=0;
-=<f0>;
-=<f1>;
-...
-```
+- The **names are your choice** and are ignored by the stove — only the **position**
+  matters. `s0` maps to slot 0, `s1` to slot 1, and so on.
+- If you register **N** names you get slots **0 … N-1** and nothing else. Register only
+  a handful and the high-index counters are never emitted — they are not “missing”, the
+  stove was never asked for them.
+- To read the cumulative counters (pellet hours, total consumption, service countdown),
+  you **must register names up to at least index 52**. There is no way to address slot
+  47 without also naming 0…46 — the mapping always starts at 0.
 
-### Known fields (positional order)
+A nameless / near-empty `GET_SENSORS` therefore returns just slot 0 (room temperature).
+That is a registration artefact, not a limitation of the stove.
 
-In **standby**, only `f0` is sent.
+### USB framing — sending the large GET_SENSORS frame
 
-| Index | Confirmed | Internal name | Description |
-|---|---|---|---|
-| f0 | Yes (empirical) | `sRoomTemp_ACT` | Room temperature ×10 (e.g. 213 = 21.3 °C) |
-| f1 | No | `usSubState` | Sub-state |
-| f2 | No | `bIgnition` | Igniter active |
-| f3 | No | `bExternal_ACT` | External room sensor active |
-| f4 | No | `lFlameTemp_ACT` | Flue/flame temperature °C |
-| f5 | No | `ulError_ACT` | Active error bitmask |
-| f6 | No | `uiWarning_ACT` | Active warning bitmask |
-| f7 | No | `uiDischargeMotor_ACT` | Discharge motor speed |
-| f8 | No | `uiInsertionMotor_ACT` | Pellet auger speed |
-| f9 | No | `uiIDFan_ACT` | Induced draft fan speed (RPM) |
-| f10 | No | `uiAirFlaps_ACT` | Air flap position |
-| f11 | No | `ulRuntimePellets` | Total pellet runtime (min) |
-| f12 | No | `ulRuntimeLogs` | Total log runtime (min) |
+Registering 53 sensors makes the `GET_SENSORS` frame several hundred bytes long. The
+stove's USB host **aborts the bulk pipe** if it receives more than 4 full-size 64-byte
+USB packets in a row without a short packet. A single large write produces back-to-back
+full packets and is dropped wholesale — which is why frames larger than ~64 bytes
+appear to “fail”.
 
-Empirically observed values for f0: 191=19.1°C, 213=21.3°C, 234=23.4°C, 261=26.1°C.
+The fix is to transmit the frame in **small chunks (≤ 32 bytes), flushing after each
+chunk**, so every USB packet is a short packet. With that, a ~600-byte `GET_SENSORS`
+frame is accepted intact and all 53 slots come back. This applies to any large frame.
+(The official firmware achieves the same effect by writing each field followed by a
+flush.)
 
-**Note:** f0 was initially documented as `usMainState` (machine state 0–7). Empirical testing confirmed it is `sRoomTemp_ACT`. Values 0–7 were never observed in f0; `sRoomTemp_ACT` matches ambient temperature measurements.
+### Sensor table (positional)
+
+Values below were read live from a DOMO and matched against the stove's own screen —
+room temperature, flame, pellet hours, total consumption, service countdown, model and
+firmware versions are confirmed; unlabelled slots read `0` in standby.
+
+| Index | Name | Description |
+|---|---|---|
+| 0 | roomTemp | Room temperature ×10 (246 = 24.6 °C) |
+| 1 | flame | Flame / flue temperature (°C) |
+| 3 | errMask32 | Active error bitmask |
+| 4 | errSub | Error sub-code |
+| 5 | stateMask | Blocking-state bitmask |
+| 7 | augerSet | Pellet auger setpoint |
+| 9 | idFanMeas | Induced-draft fan, measured (RPM) |
+| 10 | idFanSet | Induced-draft fan, setpoint (RPM) |
+| 27 | boardSensor | Board temperature sensor |
+| 28–30 | stageCur1 / stageTgt2 / stageCur | Current / target heating stage |
+| 31 | mainState | Machine state (0 Standby, 1 Ignition, 2 Start, 3 Regulation, 4 Cleaning, 5 Burnoff) |
+| 32 | subState | Sub-state |
+| 33 | rssi | WiFi RSSI reported back |
+| 35 | fabNumber | Fabrication number |
+| 36 | model | Stove model ID (13 = DOMO) |
+| 37 | language | UI language index |
+| 38 | appVerBoard | Main board firmware version (229 = V2.29) |
+| 44 | firmwareBuild | Firmware build (58512 = 585.12) |
+| 45 | subVersion | Firmware sub-version |
+| 47 | **pelletHours** | Total pellet operating time |
+| 49 | **pelletsTotal** | Total pellet consumption (kg) |
+| 50 | **serviceCountdown** | Consumption remaining before service (kg) |
+| 51 | serviceOffset | Service interval offset |
+| 52 | serviceMinutes | Service time counter |
+
+Indices not listed read `0` in standby and are not yet identified.
 
 ---
 
 ## TRANSFER_COMPLETED
 
-Sent by the dongle to flush the stove's response queues.
-
-- **TC1** (after 100 ms drain): dequeues `POST_SENSORS`
-- **TC2** (after 2 000 ms drain): dequeues `POST_CONTROLS`
-
-Slot priority: POST_CONTROLS > POST_SENSORS. Each slot is consumed once per cycle.
+Sent by the dongle to flush the stove's response queues. Each `TRANSFER_COMPLETED`
+dequeues one pending `POST_*` frame; controls have priority over sensors. Send it
+several times per cycle to drain everything (status, controls, sensors). It only
+produces output after a `GET_REVISION` has armed the slots.
 
 ---
 
-## Keepalive (every 5 s)
+## Keepalive
 
-**Provisioning mode:**
-```
-POST_CDCDEVICE_STATUS=0; <blank fields> -------
-```
-The stove echoes its stored credentials (SSID, WPA2, id, token) — this is how the dongle retrieves WiFi credentials after the user selects a network on the stove screen.
+The dongle must send a `POST_CDCDEVICE_STATUS` (or the normal poll traffic) regularly.
+A short interval (a few seconds) gives fast reaction to scan requests while staying
+well within the watchdog window.
 
-**Connected mode:**
-```
-GET_CDCDEVICE_STATUS=0; <full fields, symbol=4>
-POST_CDCDEVICE_STATUS=0; <full fields, symbol=4>
-```
-The stove echoes back `POST_CDCDEVICE_STATUS` with its own stored values. **Field 3 (`scan_command`) of that echo** is monitored to detect WiFi scan requests (see WiFi scan flow below).
-
-A 5 s interval provides fast detection of `scan_command=1` while staying well within the 360 s watchdog.
+The stove echoes its stored WiFi credentials (SSID in field 16, WPA2 in field 17) in
+the status it sends back — this is how the credentials the user entered on the stove
+panel become visible to the dongle.
 
 ---
 
-## WiFi scan and provisioning
+## WiFi scan (network list on the stove panel)
 
-### Triggering a scan
+### Trigger
 
-When the user opens the WiFi settings screen on the stove panel, the stove sets `scan_command=1` in **field 3** of the `POST_CDCDEVICE_STATUS` echo it sends in response to the dongle's keepalive. The dongle reads this field in the echo and triggers a WiFi scan.
+When the user opens the WiFi settings screen on the stove, the stove sets
+`scan_command = 1` (field 3) in the `POST_CDCDEVICE_STATUS` it sends back. The dongle
+reads that field and starts a WiFi scan.
 
-### Scan flow (confirmed empirically)
+### Flow (confirmed empirically)
 
 ```
-Stove → Dongle : POST_CDCDEVICE_STATUS (field 3 = scan_command = 1)
-Dongle         : WiFi.scanNetworks() [async, ~4 s]
-Dongle → Stove : GET_NETWORKS=1;\n<HEX_SSID1>=<RSSI1>\n...<HEX_SSIDn>=<RSSIn>\n
-Stove → Dongle : GET_NETWORKS_FINISHED   (stove acknowledges the list)
+Stove → Dongle : POST_CDCDEVICE_STATUS (field 3 scan_command = 1)
+Dongle         : WiFi scan (async, ~4 s)
+Dongle → Stove : GET_NETWORKS=1;\n<HEX_SSID1>=<RSSI1>\n ... <HEX_SSIDn>=<RSSIn>\n
+Stove → Dongle : GET_NETWORKS_FINISHED
 Dongle → Stove : GET_CDCDEVICE_STATUS=0; <full fields, symbol=7>
 Stove          : displays the network list on the panel
 ```
 
-**Key points:**
-- `symbol=7` in `GET_CDCDEVICE_STATUS` is the **display trigger** — the stove only renders the network list after receiving it. Without `symbol=7`, the list is received but never shown.
-- `symbol=7` must be sent **in response to the stove's `GET_NETWORKS_FINISHED`**, not immediately after `GET_NETWORKS`. The stove sends `GET_NETWORKS_FINISHED` after parsing the full network list.
-- **Do NOT send `GET_NETWORKS_FINISHED` from dongle → stove during the scan flow.** The stove interprets it as a poll trigger and resets the network list, causing a "Réseau pas trouvé" error.
-- SSID encoding: uppercase hex string, one byte = two hex digits (e.g. `44696575` for `Dieu`).
-- RSSI: signed decimal integer in dBm (e.g. `-65`).
-- Maximum 16 networks per list.
-- `WiFi.scanDelete()` must be called **after** reading all SSIDs and RSSIs — calling it before zeroes out the results.
+Key points:
 
-### Performance tip
+- `symbol = 7` is the **display trigger** — the stove only renders the list after
+  receiving it, and it must be sent **in response to** the stove's
+  `GET_NETWORKS_FINISHED`, not right after `GET_NETWORKS`.
+- Do **not** send `GET_NETWORKS_FINISHED` from dongle → stove during the scan; the
+  stove treats it as a poll trigger and drops the list (“network not found”).
+- SSID encoding: uppercase hex, two hex digits per byte (`44696575` = `Dieu`).
+- RSSI: signed decimal dBm.
+- At most 16 networks per list.
+- Caching a background scan and serving it on demand keeps the response within the
+  stove's display window.
 
-Perform a background WiFi scan every 30 s and cache the result. When `scan_command=1` is detected, serve the cached list immediately instead of waiting ~4 s for a fresh scan. This keeps the total response time well within the stove's ~5 s display window.
+---
 
-### Network selection by user
+## WiFi provisioning (dongle side)
 
-After the stove displays the list and the user selects a network, the stove sends the new credentials in the `POST_CDCDEVICE_STATUS` echo:
+Two ways to give the dongle its own WiFi credentials:
 
-- Field 16: new SSID (hex-encoded)
-- Field 17: new WPA2 password (plaintext)
+- **Captive portal** — on first boot (or after a reset) the dongle starts an open
+  access point `Open-Firenet-Setup`; the captive portal lets you pick your 2.4 GHz
+  network and enter the password. Credentials are stored and the dongle reboots into
+  station mode.
+- **Serial command** — send `SETWIFI:<ssid>:<password>` over the ESP32 serial port
+  (115200 baud). The SSID ends at the first `:`; everything after it is the password.
 
-The dongle saves these to its own persistent storage (ESP32 NVS via `Preferences`) and reconnects.
+Robust station connection on the ESP32-S3 (coexisting with native USB): disable WiFi
+power save, set TX power, configure the station, and connect with a short delay after
+setup. A plain `WiFi.begin()` alone tends not to associate.
 
 ---
 
 ## Error / warning bitmasks
 
-### Warnings (f6 / `uiWarning_ACT`)
+### Warnings
 
 | Bit | Meaning |
 |---|---|
@@ -302,7 +340,7 @@ The dongle saves these to its own persistent storage (ESP32 NVS via `Preferences
 | 3 | Maintenance due |
 | 4 | Cleaning required |
 
-### Errors (f5 / `ulError_ACT`)
+### Errors
 
 | Bit | Code | Meaning |
 |---|---|---|
@@ -311,20 +349,27 @@ The dongle saves these to its own persistent storage (ESP32 NVS via `Preferences
 | 2 | F02 | Overtemperature |
 | 3 | F03 | Pellet sensor fault |
 | 4 | F04 | Flue sensor fault |
-| 5 | F05 | IDFan fault |
+| 5 | F05 | Induced-draft fan fault |
 
 ---
 
 ## Watchdog
 
-The stove reboots the dongle after **360 seconds** without a `POST_CDCDEVICE_STATUS`. The dongle must send a keepalive at least every 6 minutes.
+The stove reboots the dongle after **360 seconds** without a `POST_CDCDEVICE_STATUS`.
+Keep the keepalive well under that.
 
 ---
 
 ## Notes and caveats
 
-- `GET_CONTROLS` must be sent **before** `GET_REVISION` in the poll cycle to trigger the `POST_CONTROLS` TC slot correctly.
-- The field order in `POST_CONTROLS` is shifted by one; always parse positionally.
-- `tempRoomTarget` is **always ×10** on the wire in both directions.
-- `heatingPower` minimum is 30 in the protocol but the stove may reject values below 50 depending on model.
-- Firenet v2 stoves (`symbol_current == 2`) use `GET_FIRENET_STATUS` / `POST_FIRENET_STATUS` instead of the CDC device status commands — not implemented here.
+- The stove never asserts DTR — write directly to the USB CDC FIFO.
+- Send large frames in ≤ 32-byte flushed chunks (short packets) or the stove's USB host
+  aborts the pipe.
+- Register **all** sensor names (0…52) to get the high-index counters; the stove only
+  emits the slots you name, starting at 0.
+- Parse `POST_CONTROLS` / `POST_SENSORS` **positionally**; the field names are your own
+  and can appear shifted by a leading artefact value.
+- `roomTarget` / room temperature are **×10** on the wire in both directions.
+- `GET_REVISION` must precede `TRANSFER_COMPLETED`, or nothing is returned.
+- Firenet v2 stoves (`symbol_current == 2`) use `GET_FIRENET_STATUS` /
+  `POST_FIRENET_STATUS` instead of the CDC device-status commands — not covered here.

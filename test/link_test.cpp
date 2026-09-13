@@ -1,0 +1,97 @@
+#include "firenet_link.h"
+#include <iostream>
+using namespace firenet;
+
+int main(){
+  std::string wire; uint32_t clk=0;
+  DongleLink link([&](const uint8_t*d,size_t n){ wire.append((const char*)d,n); },
+                  [&](){ return clk; });
+  int ok=0,ko=0;
+  auto CH=[&](const char*n,bool c){ if(c)ok++; else{ko++; std::cout<<"ECHEC "<<n<<"\n";} };
+  // émission cadencée : poll empile puis émet une trame par TX_GAP_MS -> on draine
+  auto drain=[&](){ for(int i=0;i<64 && !link.txIdle();i++){ clk+=DongleLink::TX_GAP_MS; link.poll(); } };
+  // négociation
+  link.poll(); drain();              // empile + émet la version
+  CH("version émise", wire.find("GET_CDCDEVICE3_VERSION=0; BL=112; APP=201; REV=12201; DT=3;")!=std::string::npos);
+  // le poêle répond FINISHED
+  std::string fin="GET_CDCDEVICE_VERSION_FINISHED";
+  for(char c:fin) link.onByte(c);
+  clk+=60; link.poll();              // silence écoulé (>SILENCE_MS après le dernier octet)
+  CH("version acquittée", link.model().version_ack && link.model().generation==1);
+  // le poêle pousse un POST_CDCDEVICE_STATUS avec SSID hexa
+  wire.clear();
+  std::string st="POST_CDCDEVICE_STATUS=0;\n0\n1\n0\n0\n5\n0\n0\n112\n201\n12201\n0\n-52\n17800020\nfHTeLam2\n3\n4D6F6E53534944\nsecret\n192.168.1.5\nAA:BB\n1\n";
+  for(char c:st) link.onByte(c);
+  clk+=60; link.poll();              // silence écoulé
+  CH("ssid décodé", link.model().status.at("ssid")=="MonSSID");
+  CH("app_version lu", link.model().status.at("app_version")=="201");
+  // POST_SENSORS différentiel
+  std::string ps="POST_SENSORS=0; temp=213; status=1; ";
+  for(char c:ps) link.onByte(c);
+  clk+=60; link.poll();
+  CH("sensors fusionnés", link.model().sensors.at("temp")==213 && link.model().sensors.at("status")==1);
+  std::string ps2="POST_SENSORS=0; temp=218; ";
+  for(char c:ps2) link.onByte(c);
+  clk+=60; link.poll();
+  CH("diff appliqué", link.model().sensors.at("temp")==218 && link.model().sensors.at("status")==1);
+  // fragmentation USB : une trame arrivant en 2 morceaux à <SILENCE_MS d'intervalle
+  // doit être recomposée et traitée une seule fois.
+  {
+    std::string w2; uint32_t c2=0;
+    DongleLink l2([&](const uint8_t*d,size_t n){ w2.append((const char*)d,n); },
+                  [&](){ return c2; });
+    std::string f="GET_CDCDEVICE_VERSION_FINISHED";
+    for(size_t i=0;i<10;i++) l2.onByte(f[i]);
+    c2+=10; l2.poll();                // < SILENCE_MS : pas de dispatch
+    CH("fragment 1 en attente", !l2.model().version_ack);
+    for(size_t i=10;i<f.size();i++) l2.onByte(f[i]);
+    c2+=60; l2.poll();                // > SILENCE_MS après fin : dispatch
+    CH("recomposé", l2.model().version_ack);
+  }
+  // dump complet (§8.5) : valeurs positionnelles pures ("=val" sans nom)
+  // le poêle peut les fragmenter sur plusieurs trames (continuation).
+  {
+    DongleLink l2([](const uint8_t*,size_t){}, [&](){ return clk; });
+    // trame 1 : commence par POST_SENSORS=0; puis du positionnel
+    std::string d = "POST_SENSORS=0; =218; =45; =0; =0; =0; =0; ";
+    for(char ch:d) l2.onByte(ch);
+    clk+=50; l2.poll();
+    CH("dump part 1", l2.model().sensors_pos.size()==6);
+    CH("dump s00=218", l2.model().sensors_pos[0]==218);
+    CH("dump s01=45",  l2.model().sensors_pos[1]==45);
+    // trame 2 : continuation "=val" SANS "POST_SENSORS" en tête -> doit prolonger sensors_pos
+    std::string d2 = "=0; =70; =0; =1450; ";
+    for(char ch:d2) l2.onByte(ch);
+    clk+=50; l2.poll();
+    CH("continuation accumulée", l2.model().sensors_pos.size()==10);
+    CH("continuation s09=1450", l2.model().sensors_pos[9]==1450);
+  }
+  // cas réel poêle : continuations multiples avec positions prouvées
+  {
+    DongleLink l2([](const uint8_t*,size_t){}, [&](){ return clk; });
+    // trame initiale POST_SENSORS
+    std::string h = "POST_SENSORS=0; =213; =47; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =0; =1; =0; ";
+    for(char ch:h) l2.onByte(ch);
+    clk+=50; l2.poll();
+    std::string k = "=0; =1; =1; =1; =1; =1; =1; =29; =70; =70; =70; =1; =3; =0; =0; =1; =13; =3; =229; =0; =0; =160; ";
+    for(char ch:k) l2.onByte(ch);
+    clk+=50; l2.poll();   // continuation
+    std::string k2 = "=150; =112; =58512; =53404; =12201; =4354; =0; =7064; =700; =0; =0; ";
+    for(char ch:k2) l2.onByte(ch);
+    clk+=50; l2.poll();  // continuation
+    CH("total 53 capteurs", l2.model().sensors_pos.size()==53);
+    CH("s47 pelletHours=4354", l2.model().sensors_pos[47]==4354);
+    CH("s49 pelletsTotal=7064", l2.model().sensors_pos[49]==7064);
+    CH("s50 serviceCountdown=700", l2.model().sensors_pos[50]==700);
+    // commande suivante clôt l'accumulation
+    std::string end = "GET_CDCDEVICE_VERSION_FINISHED";
+    for(char ch:end) l2.onByte(ch);
+    clk+=50; l2.poll();
+    std::string stray = "=999; ";
+    for(char ch:stray) l2.onByte(ch);
+    clk+=50; l2.poll();
+    CH("continuation rejetée après clôture", l2.model().sensors_pos.size()==53);
+  }
+  std::cout << ok << " ok, " << ko << " échecs\n";
+  return ko ? 1 : 0;
+}

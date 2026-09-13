@@ -547,11 +547,15 @@ static void handleApiSensors() {
   addKV("stovePower", String(curStage));
   addKV("stoveTempTarget", String(curRoom));
 
-  // Tous les autres capteurs nommés
-  for (const auto& kv : m.sensors) {
-    if (kv.first != "roomTemp" && kv.first != "flame" && kv.first != "mainState") {
-      addKV(kv.first.c_str(), String(kv.second));
-    }
+  // Diagnostic ESP32 (compatibilité PR #1)
+  addKV("uptime", String(millis() / 1000));
+  addKV("firmware", "2.0.0");
+  addKV("internalTemp", String(temperatureRead(), 1));
+  if (WiFi.status() == WL_CONNECTED) {
+    addKV("mac", WiFi.macAddress());
+    addKV("rssi", String(WiFi.RSSI()));
+    addKV("ssid", wifiSsid);
+    addKV("ip", WiFi.localIP().toString());
   }
   json += "}";
   web.send(200, "application/json", json);

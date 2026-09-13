@@ -388,10 +388,42 @@ static void handleForget() {
   delay(300); ESP.restart();
 }
 
+// Option C — provisioning par commande série (UART0, 115200) :
+//   SETWIFI:<ssid>:<password>
+// Le SSID s'arrête au premier ':' ; tout le reste est le mot de passe (donc un
+// mot de passe contenant ':' est accepté). Enregistre en NVS puis redémarre en STA.
+static void handleSerialProvisioning() {
+  static String line;
+  while (DBG.available()) {
+    char c = (char)DBG.read();
+    if (c == '\n' || c == '\r') {
+      if (line.startsWith("SETWIFI:")) {
+        String rest = line.substring(8);       // après "SETWIFI:"
+        int sep = rest.indexOf(':');
+        if (sep > 0) {
+          String ssid = rest.substring(0, sep);
+          String pass = rest.substring(sep + 1);
+          prefs.begin("firenet", false);
+          prefs.putString("ssid", ssid);
+          prefs.putString("pass", pass);
+          prefs.end();
+          DBG.printf("[wifi] SETWIFI OK ssid=\"%s\" -> reboot STA\n", ssid.c_str());
+          delay(200); ESP.restart();
+        } else {
+          DBG.println("[wifi] SETWIFI: format attendu -> SETWIFI:<ssid>:<password>");
+        }
+      }
+      line = "";
+    } else if (line.length() < 160) {
+      line += c;
+    }
+  }
+}
+
 static void startApMode() {
   g_isApMode = true;
   WiFi.mode(WIFI_AP);
-  WiFi.softAP("Open-Firenet-Setup", "openfirenet");
+  WiFi.softAP("Open-Firenet-Setup");   // réseau ouvert (sans mot de passe)
   dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer.start(53, "*", WiFi.softAPIP());
   DBG.printf("[wifi] AP Open-Firenet-Setup (DNS captif actif) IP: %s\n",
@@ -893,6 +925,9 @@ void loop() {
   if (g_isApMode) {
     dnsServer.processNextRequest();
   }
+
+  // 0b) provisioning série (Option C) : commande SETWIFI:<ssid>:<pass> sur UART0
+  handleSerialProvisioning();
 
   // 1) drainer le CDC entrant (poêle -> nous)
   while (POELE.available()) g_link->onByte((uint8_t)POELE.read());

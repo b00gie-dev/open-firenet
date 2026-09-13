@@ -132,7 +132,7 @@ Then inside WSL:
 
 On first boot (or if credentials were reset), the bridge enters **provisioning mode** with its own Wi-Fi Access Point: **`Open-Firenet-Setup`** (open network, no password).
 
-Three ways to provision:
+Two ways to provision:
 
 ### Option A — Captive Portal (smartphone or PC, recommended)
 1. Connect your phone or laptop to the Wi-Fi network **`Open-Firenet-Setup`**.
@@ -140,16 +140,12 @@ Three ways to provision:
 3. Select your 2.4 GHz home Wi-Fi from the scanned networks list, enter your Wi-Fi password, and click **Enregistrer / Connect**.
 4. The dongle reboots, connects to your LAN, and becomes available at **`http://open-firenet.local`**.
 
-### Option B — Stove screen (no smartphone needed)
-1. On the stove panel, navigate to **Settings → WiFi** and select your network.
-2. The stove transmits credentials over the USB CDC link to the bridge.
-3. The bridge connects and displays the connected icon on the stove screen.
-
-### Option C — Serial command (for lab / debugging)
-Connect to the ESP32-S3 serial port (`115200 baud`):
+### Option B — Serial command (for lab / debugging)
+Connect to the ESP32-S3 serial port (`115200 baud`) and send:
 ```
 SETWIFI:YourSSID:YourPassword
 ```
+The SSID ends at the first `:`; everything after it is the password (so a password containing `:` is accepted). Credentials are saved to NVS and the bridge reboots into STA mode.
 
 ---
 

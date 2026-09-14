@@ -618,6 +618,9 @@ tr:hover td { background: rgba(255,255,255,0.02); }
           <tr><td id="lblCdcOut" style="color:var(--text-dim)">Trames émises poêle (OUT)</td><td id="cdcOut">--</td></tr>
         </tbody>
       </table>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+        <button class="btn-lock" id="btnRestart" style="color:var(--amber);border-color:var(--amber)" onclick="restartDongle()">🔄 Redémarrer la clef</button>
+      </div>
     </div>
   </div>
 
@@ -695,6 +698,9 @@ const I18N = {
     logAuto: "Auto",
     logDownload: "⬇ Télécharger",
     logClear: "Effacer",
+    btnRestart: "🔄 Redémarrer la clef",
+    confirmRestart: "Redémarrer la clef ? La liaison avec le poêle sera coupée quelques secondes.",
+    restartToast: "Redémarrage en cours…",
     sensorSearchPlaceholder: "🔍 Filtrer les 53 capteurs...",
     thSensorName: "Capteur",
     thSensorId: "Identifiant",
@@ -813,6 +819,9 @@ const I18N = {
     logAuto: "Auto",
     logDownload: "⬇ Download",
     logClear: "Clear",
+    btnRestart: "🔄 Restart dongle",
+    confirmRestart: "Restart the dongle? The link with the stove will drop for a few seconds.",
+    restartToast: "Restarting…",
     sensorSearchPlaceholder: "🔍 Filter 53 sensors...",
     thSensorName: "Sensor",
     thSensorId: "Internal ID",
@@ -923,6 +932,7 @@ function applyLang() {
   document.getElementById('lblLogAuto').textContent = t.logAuto;
   document.getElementById('btnLogDownload').textContent = t.logDownload;
   document.getElementById('btnLogClear').textContent = t.logClear;
+  document.getElementById('btnRestart').textContent = t.btnRestart;
   document.getElementById('sensorSearch').placeholder = t.sensorSearchPlaceholder;
   document.getElementById('thSensorName').textContent = t.thSensorName;
   document.getElementById('thSensorId').textContent = t.thSensorId;
@@ -1007,6 +1017,11 @@ async function fetchLogs() {
   } catch (e) { /* silencieux */ }
 }
 function clearLog() { document.getElementById('logConsole').innerHTML = '(effacé, en attente…)'; }
+async function restartDongle() {
+  if (!confirm(I18N[curLang].confirmRestart)) return;
+  try { await fetch('/api/restart', {method: 'POST'}); } catch (e) { /* la carte redémarre */ }
+  toast(I18N[curLang].restartToast);
+}
 async function downloadLog() {
   try {
     const txt = await (await fetch('/log')).text();

@@ -1,5 +1,9 @@
 # Open Firenet
 
+<p align="center">
+  <img src="assets/brand-logo.png" alt="Open Firenet Logo" width="420">
+</p>
+
 Local WiFi bridge for RIKA pellet stoves — replaces the proprietary Firenet 2.0 cloud dongle with an ESP32-S3 that exposes a local REST API and web interface.
 
 No cloud account. No internet dependency. Works on your LAN.

@@ -38,8 +38,12 @@ PORT=""
 
 detect_port() {
   for p in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyCH343USB0; do
-    [ -e "$p" ] && { echo "$p"; return; }
+    if [ -e "$p" ]; then
+      echo "$p"
+      return 0
+    fi
   done
+  return 0
 }
 
 while [[ $# -gt 0 ]]; do

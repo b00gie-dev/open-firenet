@@ -10,6 +10,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title id="pageTitle">Open-Firenet — Tableau de Bord</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M48 10A40 40 0 1 0 52 90M52 10A40 40 0 0 1 48 90' fill='none' stroke='%23f97316' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M50 24L59 40L53 43L64 58C64 70 58 76 50 76C42 76 36 70 36 58L47 43L41 40Z' fill='%23f97316'/%3E%3Cpath d='M50 52C53 52 56 56 56 61C56 65 53 68 50 68C47 68 44 65 44 61C44 56 47 52 50 52Z' fill='%230c0f17'/%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #0c0f17;
@@ -18,8 +19,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   --text: #f1f5f9;
   --text-dim: #94a3b8;
   --text-muted: #64748b;
-  --primary: #e53935;
-  --primary-glow: rgba(229,57,53,0.35);
+  --primary: #f97316;
+  --primary-glow: rgba(249,115,22,0.35);
   --green: #10b981;
   --green-glow: rgba(16,185,129,0.3);
   --amber: #f59e0b;
@@ -398,7 +399,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 <body>
 <header>
   <div class="brand">
-    <svg viewBox="0 0 24 24"><path d="M12 23c-4.97 0-9-4.03-9-9 0-4.08 2.87-7.79 6.27-10.74.8-.69 2-.13 2 .93 0 1.25.4 2.45 1.15 3.45.24.32.72.33.98.02.97-1.16 2.42-2.14 4.09-2.78.77-.3 1.51.46 1.24 1.23-.92 2.62-.31 5.48 1.48 7.42C20.35 15.65 21 17.27 21 19c0 2.21-.89 4.21-2.34 5.66C16.92 26.39 14.59 27 12 27z"/></svg>
+    <svg viewBox="0 0 100 100" style="width:28px;height:28px;filter:drop-shadow(0 0 6px rgba(249,115,22,0.5));flex-shrink:0"><path d="M48 10A40 40 0 1 0 52 90M52 10A40 40 0 0 1 48 90" fill="none" stroke="var(--primary)" stroke-width="7" stroke-linecap="round"/><path d="M50 24L59 40L53 43L64 58C64 70 58 76 50 76C42 76 36 70 36 58L47 43L41 40Z" fill="var(--primary)"/><path d="M50 52C53 52 56 56 56 61C56 65 53 68 50 68C47 68 44 65 44 61C44 56 47 52 50 52Z" fill="var(--bg)"/></svg>
     <span>Open-Firenet</span>
     <span class="badge badge-sub" id="modelBadge">Poêle</span>
     <span class="badge badge-live"><span class="dot"></span> <span id="connState">En ligne</span></span>

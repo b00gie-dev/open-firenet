@@ -114,6 +114,16 @@ int main(){
     c3+=DongleLink::TX_GAP_MS; l3.poll();
     c3+=DongleLink::TX_GAP_MS; l3.poll();
     CH("trames 5-6 TRANSFER_COMPLETED", l3.txIdle());
+
+    // Simulation trame partielle reçue du poêle : POST_CONTROLS avec seulement revision et roomTarget
+    std::string partial = "POST_CONTROLS=0; revision=0; roomTarget=210; ";
+    for (char c : partial) l3.onByte(c);
+    c3 += 60; l3.poll();
+    CH("contrôles partiels intégrés", l3.model().controls.at("roomTarget")==210);
+    CH("controls_pos garde 5 éléments", l3.model().controls_pos.size()==5);
+    CH("controls_pos[4] mis à jour", l3.model().controls_pos[4]==210);
+    CH("controls_pos[1] onOff préservé", l3.model().controls_pos[1]==1);
+    CH("controls_pos[2] mode préservé", l3.model().controls_pos[2]==1);
   }
   std::cout << ok << " ok, " << ko << " échecs\n";
   return ko ? 1 : 0;

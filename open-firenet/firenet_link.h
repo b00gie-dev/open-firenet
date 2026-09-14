@@ -261,8 +261,20 @@ private:
                                                        : "POST_CDCDEVICE_STATUS";
     if (buf.find(wantStatus) != std::string::npos) { pending_pos_ = nullptr; parseStatus(buf); return; }
     if (buf.find("POST_CONTROLS") != std::string::npos) {
-      model_.controls_pos.clear(); pending_pos_ = &model_.controls_pos;
-      parseBody(afterHeader(buf), &model_.controls, model_.controls_pos); return; }
+      std::vector<long> tmpPos;
+      parseBody(afterHeader(buf), &model_.controls, tmpPos);
+      if (tmpPos.size() >= 5) {
+        model_.controls_pos = tmpPos;
+      } else {
+        long on = 0, md = 2, st = 70, rm = 200;
+        auto itO = model_.controls.find("onOff"); if (itO != model_.controls.end()) on = itO->second;
+        auto itM = model_.controls.find("mode"); if (itM != model_.controls.end()) md = itM->second;
+        auto itS = model_.controls.find("targetStage"); if (itS != model_.controls.end()) st = itS->second;
+        auto itR = model_.controls.find("roomTarget"); if (itR != model_.controls.end()) rm = itR->second;
+        model_.controls_pos = { (long)model_.revision, on, md, st, rm };
+      }
+      return;
+    }
     if (buf.find("POST_SENSORS")  != std::string::npos) {
       model_.sensors_pos.clear(); pending_pos_ = &model_.sensors_pos;
       parseBody(afterHeader(buf), &model_.sensors, model_.sensors_pos); postSensors(); return; }

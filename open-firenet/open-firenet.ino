@@ -230,16 +230,16 @@ static String jsonState() {
 
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
-  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+  else if (m.controls_pos.size() >= 5) curOn = m.controls_pos[1];
 
   auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
-  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+  else if (m.controls_pos.size() >= 5) curMode = m.controls_pos[2];
 
   auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
-  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+  else if (m.controls_pos.size() >= 5) curStage = m.controls_pos[3];
 
   auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
-  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+  else if (m.controls_pos.size() >= 5) curRoom = m.controls_pos[4];
 
   const char* stName = "unknown";
   const char* stLabel = "Inconnu";
@@ -758,13 +758,13 @@ static void handleApiControls() {
   const auto& m = g_link->model();
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
-  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+  else if (m.controls_pos.size() >= 5) curOn = m.controls_pos[1];
   auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
-  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+  else if (m.controls_pos.size() >= 5) curMode = m.controls_pos[2];
   auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
-  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+  else if (m.controls_pos.size() >= 5) curStage = m.controls_pos[3];
   auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
-  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+  else if (m.controls_pos.size() >= 5) curRoom = m.controls_pos[4];
 
   long finalOn = (newOn >= 0) ? newOn : curOn;
   long finalMode = (newMode >= 0) ? newMode : curMode;

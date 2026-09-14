@@ -933,6 +933,17 @@ void loop() {
   while (POELE.available()) g_link->onByte((uint8_t)POELE.read());
   g_link->poll();
 
+  // 1b) Watchdog RX : une fois la version acquittée, le poêle répond en continu
+  // (POST_CDCDEVICE_STATUS à chaque cycle). Si plus AUCUN octet reçu pendant
+  // RX_TIMEOUT_MS alors qu'on émet toujours, le lien est figé -> on redémarre
+  // pour forcer la ré-énumération USB et un nouveau handshake.
+  static const uint32_t RX_TIMEOUT_MS = 60000;
+  if (g_link->model().version_ack &&
+      (millis() - g_link->model().last_rx_ms) > RX_TIMEOUT_MS) {
+    DBG.printf("[wd] aucun RX depuis %lus -> ESP.restart()\n", RX_TIMEOUT_MS / 1000);
+    delay(50); ESP.restart();
+  }
+
 #if HUNT_PRIO2
   if (g_link->model().version_ack) {
     static bool precond = false;
@@ -993,6 +1004,11 @@ void loop() {
     DBG.printf("[wifi] status=%d ip=%s rssi=%d ssid=%s\n",
                (int)WiFi.status(), WiFi.localIP().toString().c_str(),
                (int)WiFi.RSSI(), WiFi.SSID().c_str());
+    // suivi santé (fuite/fragmentation heap, âge du dernier RX) — diagnostic longue durée
+    DBG.printf("[sys] uptime=%lus heap=%u maxblock=%u rxAge=%lums\n",
+               (unsigned long)(millis() / 1000), (unsigned)ESP.getFreeHeap(),
+               (unsigned)ESP.getMaxAllocHeap(),
+               (unsigned long)(millis() - g_link->model().last_rx_ms));
     // dump positionnel brut : index=valeur, pour calibrer §14 sur poêle réel
     DBG.printf("[sp] n=%u:", (unsigned)m.sensors_pos.size());
     for (size_t i = 0; i < m.sensors_pos.size(); i++) DBG.printf(" %u=%ld", (unsigned)i, m.sensors_pos[i]);

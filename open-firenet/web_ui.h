@@ -1192,6 +1192,11 @@ function renderSensors(sObj, filterText) {
     else if (k === 'pelletHours') v = v + ' h';
     else if (k === 'stageCur' || k === 'stageCur1') v = v + ' %';
     else if (k === 'mainState') v = (t.stateMap && t.stateMap[v] ? t.stateMap[v].title : v);
+    else if (k === 'model') {
+      const mNames = { 10: 'INTERNO (10)', 13: 'DOMO (13)', 23: 'DOMO BACK (23)' };
+      const mFallback = (curLang === 'fr' ? 'Modèle ' : 'Model ') + v;
+      v = mNames[v] || mFallback;
+    }
     h += '<tr><td>' + label + '</td><td style="color:var(--text-dim)">' + k + '</td><td>' + v + '</td></tr>';
   }
   tb.innerHTML = h;
@@ -1292,7 +1297,12 @@ async function tick() {
     document.getElementById('serviceBar').style.width = sPct + '%';
 
     // Model & Net
-    if (stObj.model) document.getElementById('modelBadge').textContent = 'DOMO V' + (stObj.mainboard_version || '2.29');
+    const modelNames = { 10: 'INTERNO', 13: 'DOMO', 23: 'DOMO BACK' };
+    const mId = stObj.model !== undefined ? stObj.model : (rawS.model !== undefined ? rawS.model : 13);
+    const mFallback = (curLang === 'fr' ? 'Modèle ' : 'Model ') + mId;
+    const mName = stObj.model_name || modelNames[mId] || mFallback;
+    const vStr = stObj.mainboard_version ? (' V' + stObj.mainboard_version) : '';
+    document.getElementById('modelBadge').textContent = mName + vStr;
     document.getElementById('netMode').textContent = s.wifi_mode;
     document.getElementById('netIp').textContent = s.ip;
     const rssiVal = (s.device && s.device.wifi_rssi !== undefined) ? s.device.wifi_rssi : (rawS.rssi || '--');

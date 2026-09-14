@@ -92,6 +92,29 @@ int main(){
     clk+=50; l2.poll();
     CH("continuation rejetée après clôture", l2.model().sensors_pos.size()==53);
   }
+  // applyControls déclenche immédiatement GET_CONTROLS=1 + GET_REVISION + 2x TRANSFER_COMPLETED
+  {
+    std::string sent; uint32_t c3=0;
+    DongleLink l3([&](const uint8_t*d,size_t n){ sent.append((const char*)d,n); },
+                  [&](){ return c3; });
+    l3.applyControls({{"onOff",1},{"mode",1},{"targetStage",80},{"roomTarget",220}});
+    CH("applyControls queue 6 trames (drain + apply + refresh)", l3.txPending()==6);
+    // Trames 1-2 : drain préventif (§13.2)
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("drain préventif émis", sent.find("TRANSFER_COMPLETED")!=std::string::npos);
+    // Trame 3 : GET_CONTROLS=1
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("trame 3 GET_CONTROLS=1", sent.find("GET_CONTROLS=1;")!=std::string::npos);
+    CH("paramètres appliqués", sent.find("onOff=1;")!=std::string::npos && sent.find("mode=1;")!=std::string::npos);
+    // Trame 4 : GET_REVISION immédiat
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("trame 4 GET_REVISION", sent.find("GET_REVISION=")!=std::string::npos);
+    // Trames 5-6 : TRANSFER_COMPLETED post-commande
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("trames 5-6 TRANSFER_COMPLETED", l3.txIdle());
+  }
   std::cout << ok << " ok, " << ko << " échecs\n";
   return ko ? 1 : 0;
 }

@@ -182,6 +182,11 @@ public:
              "GET_CONTROLS=1; revision=%ld; onOff=%ld; mode=%ld; targetStage=%ld; roomTarget=%ld; ",
              (long)model_.revision, onOff, mode, targetStage, roomTarget);
     send(b);
+    // Enchaîner immédiatement la demande de révision et la purge pour forcer le poêle
+    // à renvoyer la télémétrie actualisée dans les 1.2s au lieu d'attendre la boucle périodique
+    sendRevision();
+    transferCompleted();
+    transferCompleted();
   }
   void setRssi(int r) { rssi_ = r; }
   void sendRevision() {

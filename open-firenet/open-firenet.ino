@@ -90,6 +90,7 @@ static void buildNames() {
 
 // --------------------------------------------------------- liaison protocole
 firenet::DongleLink* g_link = nullptr;
+static uint32_t lastPoll = 0;
 
 static void txToStove(const uint8_t* d, size_t n) {
   // Le poêle (hôte USB Atmel AVR32) limite les transactions USB pleines à 4 (0x8004e568)
@@ -168,6 +169,15 @@ static bool findJsonString(const String& str, const String& key, String& out) {
   return true;
 }
 
+static const char* getStoveModelName(long modelId) {
+  switch (modelId) {
+    case 10: return "INTERNO";
+    case 13: return "DOMO";
+    case 23: return "DOMO BACK";
+    default: return "RIKA";
+  }
+}
+
 // ------------------------------------------------------------------- API web V2
 static String jsonState() {
   const auto& m = g_link->model();
@@ -210,6 +220,7 @@ static String jsonState() {
 
   long modelId = (m.sensors_pos.size() > 36) ? m.sensors_pos[36] : 13;
   auto itMod = m.sensors.find("model"); if (itMod != m.sensors.end()) modelId = itMod->second;
+  const char* modelName = getStoveModelName(modelId);
 
   long appVer = (m.sensors_pos.size() > 38) ? m.sensors_pos[38] : 229;
   auto itAV = m.sensors.find("appVerBoard"); if (itAV != m.sensors.end()) appVer = itAV->second;
@@ -256,7 +267,7 @@ static String jsonState() {
   float fTempF = (float)fTemp;
   float bTempF = (float)bTemp;
 
-  char buf[1200];
+  char buf[1400];
   snprintf(buf, sizeof(buf),
     "{"
     "\"device\":{"
@@ -280,6 +291,7 @@ static String jsonState() {
       "\"error_code\":%ld,"
       "\"error_sub\":%ld,"
       "\"model\":%ld,"
+      "\"model_name\":\"%s\","
       "\"mainboard_version\":\"%ld.%02ld\","
       "\"firmware_build\":\"%ld\""
     "},"
@@ -311,7 +323,7 @@ static String jsonState() {
     isBurning ? "true" : "false",
     errMask != 0 ? "true" : "false",
     errMask, errSub,
-    modelId, appVer / 100, appVer % 100, buildVer,
+    modelId, modelName, appVer / 100, appVer % 100, buildVer,
     rTempF, fTempF, bTempF, pTotal, pHours, sCount, idFan, auger,
     (curOn == 1) ? "true" : "false",
     modeName, curMode, rTargetF, curStage
@@ -567,6 +579,11 @@ static void handleApiSensors() {
   addKV("serviceCountdownKg", String(sCount));
   addKV("idFan", String(idFan));
 
+  long modelId = (m.sensors_pos.size() > 36) ? m.sensors_pos[36] : 13;
+  auto itMod = m.sensors.find("model"); if (itMod != m.sensors.end()) modelId = itMod->second;
+  addKV("model", String(modelId));
+  addKV("modelName", getStoveModelName(modelId));
+
   // Contrôles en lecture
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
@@ -762,6 +779,7 @@ static void handleApiControls() {
   full.push_back({"roomTarget", finalRoom});
 
   g_link->applyControls(full);
+  lastPoll = millis();
 
   const char* modeName = (finalMode == 0) ? "manual" : ((finalMode == 1) ? "auto" : "comfort");
   float rTargetF = finalRoom / 10.0f;
@@ -906,7 +924,6 @@ void setup() {
 static uint32_t g_grCount = 0;
 
 // ---------------------------------------------------------------------- loop
-static uint32_t lastPoll = 0;
 void loop() {
   // 0) connect WiFi différé (laisse le driver se poser après config bas niveau)
   if (g_wifiConnectAt && millis() >= g_wifiConnectAt) {

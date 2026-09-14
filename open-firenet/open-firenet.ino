@@ -333,6 +333,7 @@ static String jsonState() {
   j += "\"wifi_mode\":\"" + String(WiFi.getMode()==WIFI_AP?"AP":"STA") + "\",";
   j += "\"ip\":\"" + (WiFi.getMode()==WIFI_AP?WiFi.softAPIP():WiFi.localIP()).toString() + "\",";
   j += "\"wifi_connected\":" + String(WiFi.status()==WL_CONNECTED?"true":"false") + ",";
+  j += "\"uptime_seconds\":" + String(millis() / 1000UL) + ",";
   j += "\"write_enabled\":true,";
   j += "\"version_ack\":" + String(m.version_ack ? "true" : "false") + ",";
   j += "\"generation\":" + String(m.generation) + ",";

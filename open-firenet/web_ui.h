@@ -578,10 +578,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   <div class="tab-content" id="tab-network">
     <div class="card" style="gap:16px">
       <h3 id="lblNetTitle">Configuration Réseau</h3>
-      <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:0.9rem">
+      <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:0.9rem;flex-wrap:wrap;gap:8px">
         <span><span id="lblNetModePrefix">Mode : </span><b id="netMode">--</b></span>
         <span>IP : <b id="netIp">--</b></span>
         <span><span id="lblNetRssiPrefix">Signal RSSI : </span><b id="netRssi">--</b> dBm</span>
+        <span><span id="lblNetUptimePrefix">Uptime : </span><b id="netUptime">--</b></span>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <label id="lblJoinWifi" style="font-size:0.9rem;font-weight:600">Rejoindre un réseau WiFi (2.4 GHz) :</label>
@@ -617,6 +618,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
           <tr><td id="lblCdcRev" style="color:var(--text-dim)">Révision poêle courante</td><td id="cdcRev">--</td></tr>
           <tr><td id="lblCdcIn" style="color:var(--text-dim)">Trames reçues poêle (IN)</td><td id="cdcIn">--</td></tr>
           <tr><td id="lblCdcOut" style="color:var(--text-dim)">Trames émises poêle (OUT)</td><td id="cdcOut">--</td></tr>
+          <tr><td id="lblUptime" style="color:var(--text-dim)">Temps d'activité (Uptime)</td><td id="dongleUptime">--</td></tr>
         </tbody>
       </table>
       <div style="display:flex;justify-content:flex-end;margin-top:14px">
@@ -727,6 +729,8 @@ const I18N = {
     cdcIn: "Trames reçues poêle (IN)",
     cdcOut: "Trames émises poêle (OUT)",
     cdcSpeed: "Opérationnelle (Full Speed)",
+    lblUptime: "Temps d'activité (Uptime)",
+    lblNetUptimePrefix: "Uptime : ",
     yes: "Oui",
     no: "Non",
     confirmSaveWifi: "La carte va redémarrer et tenter de rejoindre ",
@@ -848,6 +852,8 @@ const I18N = {
     cdcIn: "Stove incoming frames (IN)",
     cdcOut: "Stove outgoing frames (OUT)",
     cdcSpeed: "Operational (Full Speed)",
+    lblUptime: "Dongle Uptime",
+    lblNetUptimePrefix: "Uptime: ",
     yes: "Yes",
     no: "No",
     confirmSaveWifi: "Board will reboot and attempt to join ",
@@ -955,6 +961,10 @@ function applyLang() {
   document.getElementById('lblCdcRev').textContent = t.cdcRev;
   document.getElementById('lblCdcIn').textContent = t.cdcIn;
   document.getElementById('lblCdcOut').textContent = t.cdcOut;
+  const elU = document.getElementById('lblUptime');
+  if (elU) elU.textContent = t.lblUptime;
+  const elNetP = document.getElementById('lblNetUptimePrefix');
+  if (elNetP) elNetP.textContent = t.lblNetUptimePrefix;
 }
 
 function onSelectLang(l) {
@@ -1180,6 +1190,19 @@ async function scanWifi() {
   }
 }
 
+function formatUptime(sec) {
+  if (sec === undefined || sec === null || isNaN(sec) || sec < 0) return '--';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const dayUnit = (curLang === 'fr') ? 'j' : 'd';
+  if (d > 0) return d + dayUnit + ' ' + String(h).padStart(2,'0') + 'h ' + String(m).padStart(2,'0') + 'm';
+  if (h > 0) return h + 'h ' + String(m).padStart(2,'0') + 'm ' + String(s).padStart(2,'0') + 's';
+  if (m > 0) return m + 'm ' + String(s).padStart(2,'0') + 's';
+  return s + 's';
+}
+
 function renderSensors(sObj, filterText) {
   const t = I18N[curLang] || I18N.fr;
   const tb = document.getElementById('sensorsBody');
@@ -1318,6 +1341,12 @@ async function tick() {
     document.getElementById('cdcState').textContent = t.cdcSpeed;
     document.getElementById('cdcAck').textContent = s.version_ack ? t.yes : t.no;
     document.getElementById('cdcGen').textContent = s.generation ? s.generation : '--';
+    const upSec = (s.uptime_seconds !== undefined) ? s.uptime_seconds : ((s.device && s.device.uptime_seconds !== undefined) ? s.device.uptime_seconds : rawS.uptime);
+    const upStr = formatUptime(upSec);
+    const elUptime = document.getElementById('dongleUptime');
+    if (elUptime) elUptime.textContent = upStr;
+    const elNetUp = document.getElementById('netUptime');
+    if (elNetUp) elNetUp.textContent = upStr;
 
     // Table render if search empty
     const sInput = document.getElementById('sensorSearch');

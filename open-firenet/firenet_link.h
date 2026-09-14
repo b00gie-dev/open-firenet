@@ -182,8 +182,8 @@ public:
              "GET_CONTROLS=1; revision=%ld; onOff=%ld; mode=%ld; targetStage=%ld; roomTarget=%ld; ",
              (long)model_.revision, onOff, mode, targetStage, roomTarget);
     send(b);
-    // Enchaîner immédiatement la demande de révision et la purge pour forcer le poêle
-    // à renvoyer la télémétrie actualisée dans les 1.2s au lieu d'attendre la boucle périodique
+    // Immediately chain revision request and flush to force the stove
+    // to return updated telemetry within ~1.2s instead of waiting for the periodic loop
     sendRevision();
     transferCompleted();
     transferCompleted();

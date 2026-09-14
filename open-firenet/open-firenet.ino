@@ -242,17 +242,17 @@ static String jsonState() {
   else if (m.controls_pos.size() >= 5) curRoom = m.controls_pos[4];
 
   const char* stName = "unknown";
-  const char* stLabel = "Inconnu";
+  const char* stLabel = "Unknown";
   bool isBurning = false;
   switch (mainSt) {
-    case 0: stName = "off"; stLabel = "Arrêt"; isBurning = false; break;
-    case 1: stName = "standby"; stLabel = "Veille (Standby)"; isBurning = false; break;
-    case 2: stName = "ignition"; stLabel = "Allumage (Ignition)"; isBurning = true; break;
-    case 3: stName = "flame_start"; stLabel = "Démarrage flamme"; isBurning = true; break;
-    case 4: stName = "heating"; stLabel = "En régulation (Chauffe)"; isBurning = true; break;
-    case 5: stName = "cleaning"; stLabel = "Nettoyage grille"; isBurning = true; break;
-    case 6: stName = "burn_off"; stLabel = "Extinction (Burn off)"; isBurning = true; break;
-    case 7: stName = "splitlog"; stLabel = "Bûches (Splitlog)"; isBurning = true; break;
+    case 0: stName = "off"; stLabel = "Off"; isBurning = false; break;
+    case 1: stName = "standby"; stLabel = "Standby"; isBurning = false; break;
+    case 2: stName = "ignition"; stLabel = "Ignition"; isBurning = true; break;
+    case 3: stName = "flame_start"; stLabel = "Flame Start"; isBurning = true; break;
+    case 4: stName = "heating"; stLabel = "Heating"; isBurning = true; break;
+    case 5: stName = "cleaning"; stLabel = "Grate Cleaning"; isBurning = true; break;
+    case 6: stName = "burn_off"; stLabel = "Burn Off"; isBurning = true; break;
+    case 7: stName = "splitlog"; stLabel = "Split Log"; isBurning = true; break;
   }
 
   const char* modeName = "comfort";
@@ -822,7 +822,7 @@ void setup() {
 
   g_link = new firenet::DongleLink(txToStove, nowMs);
   g_link->onDebug([](const char* dir, const std::string& f){
-    if (strcmp(dir, "drop") == 0) return;    // tracer rx ET tx (diagnostic trame)
+    if (strcmp(dir, "drop") == 0) return;    // trace rx AND tx (frame diagnostics)
     std::string safe = firenet::sanitizeForLog(f);
     DBG.printf("[%s %u] ", dir, (unsigned)safe.size());
     for (char c : safe) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");

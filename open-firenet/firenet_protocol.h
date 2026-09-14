@@ -85,9 +85,9 @@ inline std::vector<std::string> parseStatusFrame(const std::string& buf,
   return out;
 }
 
-// ------------------------------------------------------------- §5.4 Masquage logs
-// Masque uniquement le mot de passe WiFi (champ 17 wpa2) dans les trames d'état
-// afin d'éviter toute fuite de clé privée lors du partage de logs de diagnostic.
+// ------------------------------------------------------------- §5.4 Log sanitization
+// Redacts the WiFi password (field 17 wpa2) in status frames
+// to prevent accidental exposure of private credentials when sharing diagnostic logs.
 inline std::string sanitizeForLog(const std::string& msg) {
   if (msg.find("STATUS=0;") == std::string::npos &&
       msg.find("STATUS") == std::string::npos) {

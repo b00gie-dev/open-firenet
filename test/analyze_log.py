@@ -57,13 +57,16 @@ heaps = [r[1] for r in sys_records]
 maxblocks = [r[2] for r in sys_records]
 rx_ages = [r[3] for r in sys_records]
 
-delta_heap = end_heap - start_heap
+# Baseline heap over last 10 samples to filter out transient HTTP/TLS socket buffers
+recent_baseline_heap = sum(heaps[-10:]) / min(10, len(heaps))
+start_baseline_heap = sum(heaps[:10]) / min(10, len(heaps))
+delta_heap = recent_baseline_heap - start_baseline_heap
 leak_rate_per_hour = (delta_heap / duration_h) if duration_h > 0.05 else 0
 
 print(f"• Uptime: {start_uptime}s -> {end_uptime}s ({duration_min:.1f} min / {duration_h:.2f} h)")
 print(f"• Samples: {len(sys_records)} health checks")
-print(f"• Heap: start={start_heap} B | now={end_heap} B | min={min(heaps)} B | max={max(heaps)} B")
-print(f"  Delta: {delta_heap:+d} B ({leak_rate_per_hour:+.1f} B/h)")
+print(f"• Heap: start_baseline={start_baseline_heap:.0f} B | current_instant={end_heap} B | recent_baseline={recent_baseline_heap:.0f} B | min={min(heaps)} B | max={max(heaps)} B")
+print(f"  Baseline Delta: {delta_heap:+.0f} B ({leak_rate_per_hour:+.1f} B/h)")
 print(f"• Max Contiguous Block: start={start_maxblock} B | now={end_maxblock} B | min={min(maxblocks)} B")
 
 stalls_5s = [r for r in sys_records if r[3] > 5000]

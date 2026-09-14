@@ -612,8 +612,8 @@ tr:hover td { background: rgba(255,255,255,0.02); }
       <table id="linkTable">
         <tbody>
           <tr><td id="lblCdcPort" style="color:var(--text-dim)">Liaison série USB</td><td id="cdcState">Opérationnelle (Full Speed)</td></tr>
-          <tr><td id="lblCdcAck" style="color:var(--text-dim)">Version poêle acquittée</td><td id="cdcAck">Oui</td></tr>
-          <tr><td id="lblCdcGen" style="color:var(--text-dim)">Génération protocole</td><td id="cdcGen">1</td></tr>
+          <tr><td id="lblCdcAck" style="color:var(--text-dim)">Version poêle acquittée</td><td id="cdcAck">--</td></tr>
+          <tr><td id="lblCdcGen" style="color:var(--text-dim)">Génération protocole</td><td id="cdcGen">--</td></tr>
           <tr><td id="lblCdcRev" style="color:var(--text-dim)">Révision poêle courante</td><td id="cdcRev">--</td></tr>
           <tr><td id="lblCdcIn" style="color:var(--text-dim)">Trames reçues poêle (IN)</td><td id="cdcIn">--</td></tr>
           <tr><td id="lblCdcOut" style="color:var(--text-dim)">Trames émises poêle (OUT)</td><td id="cdcOut">--</td></tr>
@@ -1313,7 +1313,8 @@ async function tick() {
     document.getElementById('cdcIn').textContent = s.frames_in;
     document.getElementById('cdcOut').textContent = s.frames_out;
     document.getElementById('cdcState').textContent = t.cdcSpeed;
-    document.getElementById('cdcAck').textContent = t.yes;
+    document.getElementById('cdcAck').textContent = s.version_ack ? t.yes : t.no;
+    document.getElementById('cdcGen').textContent = s.generation ? s.generation : '--';
 
     // Table render if search empty
     const sInput = document.getElementById('sensorSearch');

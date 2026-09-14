@@ -100,6 +100,9 @@ Sent in both `POST_CDCDEVICE_STATUS` (stove → dongle) and `GET_CDCDEVICE_STATU
 | 19 | mac | `` | dongle MAC |
 | 20 | cdc_device | `1` | `1` |
 
+> [!TIP]
+> In Open-Firenet, field 17 (`wpa2`) is automatically sanitized to `********` by `sanitizeForLog()` before being emitted to debug logs, the Web UI console, or Serial output, preventing accidental exposure of private WiFi credentials when sharing diagnostic traces.
+
 `GET_CDCDEVICE_STATUS` (dongle → stove) has 3 extra OTA fields (`0\n0\n0\n`) after
 field 20. `POST_CDCDEVICE_STATUS` (stove → dongle) is terminated with `-------\n`.
 

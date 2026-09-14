@@ -1007,6 +1007,9 @@ async function fetchLogs() {
     }
     const html = entries.map(e => {
       const tag = e.dir === 'rx' ? 'RX' : 'TX';
+      if (e.parts.length >= 18 && e.parts[0].includes('STATUS=')) {
+        if (e.parts[17] && e.parts[17] !== '0') e.parts[17] = '********';
+      }
       const payload = e.parts.filter(p => p.trim() !== '').join(' · ');
       return '<span class="ts">[' + e.ts + ']</span> ' +
              '<span class="' + e.dir + '"><b>' + tag + '</b>  ' + esc(payload) + '</span>';

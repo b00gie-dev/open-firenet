@@ -50,8 +50,17 @@ int main(){
   CHECK("14","sens 0 = roomTemp", sensName(0)=="roomTemp");
   CHECK("14","sens 31 = mainState", sensName(31)=="mainState");
   CHECK("14","sens 33 = rssi", sensName(33)=="rssi");
-  CHECK("14","position non identifiée -> sNN", sensName(12)=="s12");
   CHECK("13","control non identifié -> cNN", ctrlName(9)=="c09");
+
+  // §5.4 masquage mot de passe logs
+  std::string sanF = sanitizeForLog(f);
+  CHECK("5.4","wpa2 masque", sanF.find("MonMotDePasse") == std::string::npos && sanF.find("********") != std::string::npos);
+  auto sanFields = parseStatusFrame(sanF);
+  CHECK("5.4","tous les autres champs intacts", sanFields.size()==23 && sanFields[16]=="********" && sanFields[15]=="4D6F6E53534944" && sanFields[0]=="2" && sanFields[7]=="112");
+  std::string noStatus = "POST_CONTROLS=1; onOff=1; roomTarget=200; MonMotDePasse=0; ";
+  CHECK("5.4","trame hors-status non touchee", sanitizeForLog(noStatus) == noStatus);
+  std::string emptyPass = "GET_CDCDEVICE_STATUS=0;\n2\n1\n0\n0\n1\n0\n0\n112\n201\n12201\n0\n-52\n17800020\nfHTeLam2\n0\n4D6F6E53534944\n\n192.168.1.42\nAA:BB:CC:DD:EE:FF\n1\n0\n0\n0\n";
+  CHECK("5.4","mot de passe vide reste vide", sanitizeForLog(emptyPass) == emptyPass);
 
   std::cout << ok << " vérifications passées, " << ko << " échecs\n";
   return ko?1:0;

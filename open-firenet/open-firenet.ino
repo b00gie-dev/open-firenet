@@ -823,11 +823,12 @@ void setup() {
   g_link = new firenet::DongleLink(txToStove, nowMs);
   g_link->onDebug([](const char* dir, const std::string& f){
     if (strcmp(dir, "drop") == 0) return;    // tracer rx ET tx (diagnostic trame)
-    DBG.printf("[%s %u] ", dir, (unsigned)f.size());
-    for (char c : f) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");
+    std::string safe = firenet::sanitizeForLog(f);
+    DBG.printf("[%s %u] ", dir, (unsigned)safe.size());
+    for (char c : safe) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");
                        else if (c>=32 && c<127) DBG.print(c); else DBG.print('.'); }
     DBG.println();
-    logEntry(dir, f);
+    logEntry(dir, safe);
   });
 
   prefs.begin("firenet", true);

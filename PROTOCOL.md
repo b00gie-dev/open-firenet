@@ -271,6 +271,7 @@ The stove reports its hardware model identifier in sensor index 36. This ID matc
 | **`5`** | `0x05` | `005` / `RCAO` | **RIKA ROCO RAO** | Pellet stove with top flue connection (*RAO*) |
 | **`6`** | `0x06` | `006` / `KAPO` | **RIKA KAPO** | Compact pellet stove |
 | **`7`** | `0x07` | `007` / `MIRO` | **RIKA MIRO** | Pellet stove (4 kW / 6 kW) |
+| **`8`** | `0x08` | `008` / `COMO` | **RIKA COMO** | Pellet stove (1st generation) |
 | **`9`** | `0x09` | `009` / `REVO` | **RIKA REVO** | Pellet stove with natural stone |
 | **`10`** | `0x0A` | `010` / `ITRO` | **RIKA INTERNO** | Pellet fireplace insert (*Kamineinsatz*) |
 | **`11`** | `0x0B` | `011` / `FILO` | **RIKA FILO** | Customizable pellet stove |
@@ -287,6 +288,24 @@ The stove reports its hardware model identifier in sensor index 36. This ID matc
 | **`22`** | `0x16` | `022` / `SONO` | **RIKA SONO** | Compact pellet stove with large autonomy |
 | **`23`** | `0x17` | `023` / `DOBA` | **RIKA DOMO BACK** | Pellet stove with integrated baking oven (*Backofen*) |
 | **`24`** | `0x18` | `024` / `PKE` | **RIKA PK E** | Central heating pellet boiler (*Pelletkessel*) |
+| **`25`** | `0x19` | `025` / `SUMA` | **RIKA SUMO MULTIAIR** | Pellet stove with MultiAir |
+| **`26`** | `0x1A` | `026` / `CNECT` | **RIKA CONNECT** | Modular pellet stove (*CONNECT Pellet*) |
+
+#### Sibling Brand: ANIMO Models (Brand ID `0x02`)
+
+RIKA manufactures stoves under the sister brand **ANIMO** (byte 5 = `0x02` in firmware test headers):
+
+| Model ID | Code | Model Name | Type |
+|:---:|:---:|:---|:---|
+| **`1`** | `001` / `AVITO` | **ANIMO AVITO** | Pellet stove |
+| **`2`** | `002` / `AVSLM` | **ANIMO AVITO SLIM** | Compact slim pellet stove |
+| **`3`** | `003` / `AVRAO` | **ANIMO AVITO RAO** | Pellet stove with top flue |
+| **`4`** | `004` / `ADEVO` | **ANIMO ADEVO** | Pellet stove |
+| **`5`** | `005` / `PURE` | **ANIMO PURE** | Pellet stove |
+| **`6`** | `006` / `ADUO` | **ANIMO ADUO** | Combined pellet/wood stove |
+| **`7`** | `007` / `AMITO` | **ANIMO AMITO** | Pellet stove |
+| **`8`** | `008` / `ARND` | **ANIMO ARONDO** | Round pellet stove |
+| **`9`** | `009` / `ADUO_2` | **ANIMO ADUO 2** | Combined pellet/wood stove, 2nd gen |
 
 ---
 

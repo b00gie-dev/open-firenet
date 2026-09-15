@@ -29,7 +29,7 @@ jobs:
         with:
           path: |
             ~/.arduino15/packages
-            ~/.arduino15/staging
+            ~/.arduino15/cache_root.sha256
           key: esp32-core-3.3.8-${{ runner.os }}
 
       - name: Setup Arduino CLI
@@ -42,6 +42,38 @@ jobs:
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.3.8
+          rm -rf ~/.arduino15/staging
+          CALCULATED_HASH=$(cd ~/.arduino15 && find packages -type f -exec sha256sum {} + | sort -k2 | sha256sum | awk '{print $1}')
+          echo "$CALCULATED_HASH" > ~/.arduino15/cache_root.sha256
+          echo "Installed ESP32 core SHA256: $CALCULATED_HASH"
+          if [ -f .github/integrity/esp32-core-3.3.8.sha256 ]; then
+            EXPECTED_HASH=$(cat .github/integrity/esp32-core-3.3.8.sha256 | tr -d '[:space:]')
+            if [ "$CALCULATED_HASH" != "$EXPECTED_HASH" ]; then
+              echo "::error::Installed core SHA ($CALCULATED_HASH) != expected pinned SHA ($EXPECTED_HASH)"
+              exit 1
+            fi
+          fi
+
+      - name: Verify Cache Integrity
+        if: steps.arduino-cache.outputs.cache-hit == 'true'
+        run: |
+          RESTORED_HASH=$(cd ~/.arduino15 && find packages -type f -exec sha256sum {} + | sort -k2 | sha256sum | awk '{print $1}')
+          echo "Restored cache SHA256: $RESTORED_HASH"
+          if [ -f .github/integrity/esp32-core-3.3.8.sha256 ]; then
+            EXPECTED_HASH=$(cat .github/integrity/esp32-core-3.3.8.sha256 | tr -d '[:space:]')
+            if [ "$RESTORED_HASH" != "$EXPECTED_HASH" ]; then
+              echo "::error::Cache integrity violation! Restored SHA ($RESTORED_HASH) != pinned SHA ($EXPECTED_HASH)"
+              exit 1
+            fi
+            echo "Verified against pinned repository hash: OK"
+          else
+            STORED_HASH=$(cat ~/.arduino15/cache_root.sha256 2>/dev/null || echo "")
+            if [ "$RESTORED_HASH" != "$STORED_HASH" ]; then
+              echo "::error::Cache corruption! Restored SHA ($RESTORED_HASH) != stored SHA ($STORED_HASH)"
+              exit 1
+            fi
+            echo "Verified against stored cache hash: OK ($RESTORED_HASH)"
+          fi
 
       - name: Restore Arduino CLI Config
         if: steps.arduino-cache.outputs.cache-hit == 'true'

@@ -17,6 +17,7 @@ Le workflow [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) est décle
 2. **Compilation du firmware ESP32-S3** (`arduino-cli`) :
    - Vérifie que le code Arduino compile sans erreur avec le core `esp32:esp32@3.3.8` et le schéma de partition `min_spiffs`.
    - Utilise un cache des packages Arduino pour des temps de build réduits (< 1 min).
+   - **Vérification d'intégrité SHA256 du cache** : Le workflow calcule le hash SHA256 combiné de tous les binaires et bibliothèques du toolchain ESP32 pour garantir qu'aucune corruption ou altération (cache poisoning) n'a eu lieu avant la compilation. Si un fichier `.github/integrity/esp32-core-3.3.8.sha256` est présent, une vérification Zero-Trust stricte est imposée.
 
 ---
 

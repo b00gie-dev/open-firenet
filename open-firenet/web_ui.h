@@ -919,7 +919,7 @@ const I18N = {
     confirmOff: "Möchten Sie den Ofen wirklich AUSSCHALTEN?",
     roomHeader: "Raumtemperatur",
     roomTargetPrefix: "Sollwert: ",
-    flameHeader: "Brennkammertemperatur",
+    flameHeader: "Brennkammer Temp.",
     flameSub: "Thermoelement-Sensor",
     flameLive: "Aktive Verbrennung",
     flameCombustion: "Verbrennung",
@@ -1004,7 +1004,7 @@ const I18N = {
     modeMap: { 0: "Manuell (%)", 1: "Automatisch", 2: "Komfort" },
     sensorDesc: {
       roomTemp: "Gemessene Raumtemperatur (°C)",
-      flame: "Brennkammertemperatur (°C)",
+      flame: "Brennkammer Temp. (°C)",
       boardSensor: "Hauptplatine Temperatur (°C)",
       pelletsTotal: "Gesamter Pelletverbrauch (kg)",
       pelletHours: "Pellet-Betriebsstunden gesamt (h)",

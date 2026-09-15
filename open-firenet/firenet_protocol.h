@@ -85,6 +85,39 @@ inline std::vector<std::string> parseStatusFrame(const std::string& buf,
   return out;
 }
 
+// ------------------------------------------------------------- §5.4 Log sanitization
+// Redacts the WiFi password (field 17 wpa2) in status frames
+// to prevent accidental exposure of private credentials when sharing diagnostic logs.
+inline std::string sanitizeForLog(const std::string& msg) {
+  if (msg.find("STATUS=0;") == std::string::npos &&
+      msg.find("STATUS") == std::string::npos) {
+    return msg;
+  }
+  std::string out;
+  out.reserve(msg.size());
+  size_t start = 0;
+  int lineIdx = 0;
+  while (start < msg.size()) {
+    size_t next = msg.find('\n', start);
+    std::string line = (next == std::string::npos) ? msg.substr(start)
+                                                   : msg.substr(start, next - start);
+    start = (next == std::string::npos) ? msg.size() : next + 1;
+
+    bool hasCr = (!line.empty() && line.back() == '\r');
+    if (hasCr) line.pop_back();
+
+    if (lineIdx == 17 && !line.empty() && line != "0") {
+      line = "********";
+    }
+
+    out += line;
+    if (hasCr) out += '\r';
+    if (next != std::string::npos) out += '\n';
+    lineIdx++;
+  }
+  return out;
+}
+
 // -------------------------------------------------- §13 positions des controls
 // (le poêle travaille par position ; le nom est une étiquette libre)
 enum Ctrl {

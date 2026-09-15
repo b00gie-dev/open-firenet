@@ -100,6 +100,9 @@ Sent in both `POST_CDCDEVICE_STATUS` (stove → dongle) and `GET_CDCDEVICE_STATU
 | 19 | mac | `` | dongle MAC |
 | 20 | cdc_device | `1` | `1` |
 
+> [!TIP]
+> In Open-Firenet, field 17 (`wpa2`) is automatically sanitized to `********` by `sanitizeForLog()` before being emitted to debug logs, the Web UI console, or Serial output, preventing accidental exposure of private WiFi credentials when sharing diagnostic traces.
+
 `GET_CDCDEVICE_STATUS` (dongle → stove) has 3 extra OTA fields (`0\n0\n0\n`) after
 field 20. `POST_CDCDEVICE_STATUS` (stove → dongle) is terminated with `-------\n`.
 
@@ -242,7 +245,7 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 32 | subState | Sub-state |
 | 33 | rssi | WiFi RSSI reported back |
 | 35 | fabNumber | Fabrication number |
-| 36 | model | Stove model ID (13 = DOMO) |
+| 36 | model | Stove model ID (10 = INTERNO, 13 = DOMO, 23 = DOMO BACK) |
 | 37 | language | UI language index |
 | 38 | appVerBoard | Main board firmware version (229 = V2.29) |
 | 44 | firmwareBuild | Firmware build (58512 = 585.12) |
@@ -254,6 +257,18 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 52 | serviceMinutes | Service time counter |
 
 Indices not listed read `0` in standby and are not yet identified.
+
+### Known Stove Models (`sensors[36]` / `model`)
+
+The stove reports its hardware model identifier in sensor index 36. This ID matches the 3-digit code in official Rika firmware binaries (`RIKA_<type>_<modelId>_<boardVer>_<Description>_<ModelName>_V<Version>.bin`) and the byte stored at header offset `0x0006` in test firmware:
+
+| Model ID | Hex | Firmware Code | Commercial Model | Type |
+|:---:|:---:|:---:|:---|:---|
+| **`10`** | `0x0A` | `010` / `ITRO` | **RIKA INTERNO** | Pellet fireplace insert (*Kamineinsatz*) |
+| **`13`** | `0x0D` | `013` / `DOMO` | **RIKA DOMO** | Pellet stove (natural convection + MultiAir) |
+| **`23`** | `0x17` | `023` / `DOBA` | **RIKA DOMO BACK** | Pellet stove with integrated baking oven (*Backofen*) |
+
+*Note: Other Rika models (e.g. INDUO hybrid pellet/wood, COMO, PARO, LIVO) use distinct IDs and may use different firmware architectures or communication variants.*
 
 ---
 

@@ -578,10 +578,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   <div class="tab-content" id="tab-network">
     <div class="card" style="gap:16px">
       <h3 id="lblNetTitle">Configuration Réseau</h3>
-      <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:0.9rem">
+      <div style="display:flex;justify-content:space-between;color:var(--text-dim);font-size:0.9rem;flex-wrap:wrap;gap:8px">
         <span><span id="lblNetModePrefix">Mode : </span><b id="netMode">--</b></span>
         <span>IP : <b id="netIp">--</b></span>
         <span><span id="lblNetRssiPrefix">Signal RSSI : </span><b id="netRssi">--</b> dBm</span>
+        <span><span id="lblNetUptimePrefix">Uptime : </span><b id="netUptime">--</b></span>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <label id="lblJoinWifi" style="font-size:0.9rem;font-weight:600">Rejoindre un réseau WiFi (2.4 GHz) :</label>
@@ -612,11 +613,12 @@ tr:hover td { background: rgba(255,255,255,0.02); }
       <table id="linkTable">
         <tbody>
           <tr><td id="lblCdcPort" style="color:var(--text-dim)">Liaison série USB</td><td id="cdcState">Opérationnelle (Full Speed)</td></tr>
-          <tr><td id="lblCdcAck" style="color:var(--text-dim)">Version poêle acquittée</td><td id="cdcAck">Oui</td></tr>
-          <tr><td id="lblCdcGen" style="color:var(--text-dim)">Génération protocole</td><td id="cdcGen">1</td></tr>
+          <tr><td id="lblCdcAck" style="color:var(--text-dim)">Version poêle acquittée</td><td id="cdcAck">--</td></tr>
+          <tr><td id="lblCdcGen" style="color:var(--text-dim)">Génération protocole</td><td id="cdcGen">--</td></tr>
           <tr><td id="lblCdcRev" style="color:var(--text-dim)">Révision poêle courante</td><td id="cdcRev">--</td></tr>
           <tr><td id="lblCdcIn" style="color:var(--text-dim)">Trames reçues poêle (IN)</td><td id="cdcIn">--</td></tr>
           <tr><td id="lblCdcOut" style="color:var(--text-dim)">Trames émises poêle (OUT)</td><td id="cdcOut">--</td></tr>
+          <tr><td id="lblUptime" style="color:var(--text-dim)">Temps d'activité (Uptime)</td><td id="dongleUptime">--</td></tr>
         </tbody>
       </table>
       <div style="display:flex;justify-content:flex-end;margin-top:14px">
@@ -727,6 +729,8 @@ const I18N = {
     cdcIn: "Trames reçues poêle (IN)",
     cdcOut: "Trames émises poêle (OUT)",
     cdcSpeed: "Opérationnelle (Full Speed)",
+    lblUptime: "Temps d'activité (Uptime)",
+    lblNetUptimePrefix: "Uptime : ",
     yes: "Oui",
     no: "Non",
     confirmSaveWifi: "La carte va redémarrer et tenter de rejoindre ",
@@ -848,6 +852,8 @@ const I18N = {
     cdcIn: "Stove incoming frames (IN)",
     cdcOut: "Stove outgoing frames (OUT)",
     cdcSpeed: "Operational (Full Speed)",
+    lblUptime: "Dongle Uptime",
+    lblNetUptimePrefix: "Uptime: ",
     yes: "Yes",
     no: "No",
     confirmSaveWifi: "Board will reboot and attempt to join ",
@@ -955,6 +961,10 @@ function applyLang() {
   document.getElementById('lblCdcRev').textContent = t.cdcRev;
   document.getElementById('lblCdcIn').textContent = t.cdcIn;
   document.getElementById('lblCdcOut').textContent = t.cdcOut;
+  const elU = document.getElementById('lblUptime');
+  if (elU) elU.textContent = t.lblUptime;
+  const elNetP = document.getElementById('lblNetUptimePrefix');
+  if (elNetP) elNetP.textContent = t.lblNetUptimePrefix;
 }
 
 function onSelectLang(l) {
@@ -1007,6 +1017,9 @@ async function fetchLogs() {
     }
     const html = entries.map(e => {
       const tag = e.dir === 'rx' ? 'RX' : 'TX';
+      if (e.parts.length >= 18 && e.parts[0].includes('STATUS=')) {
+        if (e.parts[17] && e.parts[17] !== '0') e.parts[17] = '********';
+      }
       const payload = e.parts.filter(p => p.trim() !== '').join(' · ');
       return '<span class="ts">[' + e.ts + ']</span> ' +
              '<span class="' + e.dir + '"><b>' + tag + '</b>  ' + esc(payload) + '</span>';
@@ -1177,6 +1190,19 @@ async function scanWifi() {
   }
 }
 
+function formatUptime(sec) {
+  if (sec === undefined || sec === null || isNaN(sec) || sec < 0) return '--';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  const dayUnit = (curLang === 'fr') ? 'j' : 'd';
+  if (d > 0) return d + dayUnit + ' ' + String(h).padStart(2,'0') + 'h ' + String(m).padStart(2,'0') + 'm';
+  if (h > 0) return h + 'h ' + String(m).padStart(2,'0') + 'm ' + String(s).padStart(2,'0') + 's';
+  if (m > 0) return m + 'm ' + String(s).padStart(2,'0') + 's';
+  return s + 's';
+}
+
 function renderSensors(sObj, filterText) {
   const t = I18N[curLang] || I18N.fr;
   const tb = document.getElementById('sensorsBody');
@@ -1192,6 +1218,11 @@ function renderSensors(sObj, filterText) {
     else if (k === 'pelletHours') v = v + ' h';
     else if (k === 'stageCur' || k === 'stageCur1') v = v + ' %';
     else if (k === 'mainState') v = (t.stateMap && t.stateMap[v] ? t.stateMap[v].title : v);
+    else if (k === 'model') {
+      const mNames = { 10: 'INTERNO (10)', 13: 'DOMO (13)', 23: 'DOMO BACK (23)' };
+      const mFallback = (curLang === 'fr' ? 'Modèle ' : 'Model ') + v;
+      v = mNames[v] || mFallback;
+    }
     h += '<tr><td>' + label + '</td><td style="color:var(--text-dim)">' + k + '</td><td>' + v + '</td></tr>';
   }
   tb.innerHTML = h;
@@ -1292,7 +1323,12 @@ async function tick() {
     document.getElementById('serviceBar').style.width = sPct + '%';
 
     // Model & Net
-    if (stObj.model) document.getElementById('modelBadge').textContent = 'DOMO V' + (stObj.mainboard_version || '2.29');
+    const modelNames = { 10: 'INTERNO', 13: 'DOMO', 23: 'DOMO BACK' };
+    const mId = stObj.model !== undefined ? stObj.model : (rawS.model !== undefined ? rawS.model : 13);
+    const mFallback = (curLang === 'fr' ? 'Modèle ' : 'Model ') + mId;
+    const mName = stObj.model_name || modelNames[mId] || mFallback;
+    const vStr = stObj.mainboard_version ? (' V' + stObj.mainboard_version) : '';
+    document.getElementById('modelBadge').textContent = mName + vStr;
     document.getElementById('netMode').textContent = s.wifi_mode;
     document.getElementById('netIp').textContent = s.ip;
     const rssiVal = (s.device && s.device.wifi_rssi !== undefined) ? s.device.wifi_rssi : (rawS.rssi || '--');
@@ -1303,7 +1339,14 @@ async function tick() {
     document.getElementById('cdcIn').textContent = s.frames_in;
     document.getElementById('cdcOut').textContent = s.frames_out;
     document.getElementById('cdcState').textContent = t.cdcSpeed;
-    document.getElementById('cdcAck').textContent = t.yes;
+    document.getElementById('cdcAck').textContent = s.version_ack ? t.yes : t.no;
+    document.getElementById('cdcGen').textContent = s.generation ? s.generation : '--';
+    const upSec = (s.uptime_seconds !== undefined) ? s.uptime_seconds : ((s.device && s.device.uptime_seconds !== undefined) ? s.device.uptime_seconds : rawS.uptime);
+    const upStr = formatUptime(upSec);
+    const elUptime = document.getElementById('dongleUptime');
+    if (elUptime) elUptime.textContent = upStr;
+    const elNetUp = document.getElementById('netUptime');
+    if (elNetUp) elNetUp.textContent = upStr;
 
     // Table render if search empty
     const sInput = document.getElementById('sensorSearch');

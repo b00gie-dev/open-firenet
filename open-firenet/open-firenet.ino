@@ -90,6 +90,7 @@ static void buildNames() {
 
 // --------------------------------------------------------- liaison protocole
 firenet::DongleLink* g_link = nullptr;
+static uint32_t lastPoll = 0;
 
 static void txToStove(const uint8_t* d, size_t n) {
   // Le poêle (hôte USB Atmel AVR32) limite les transactions USB pleines à 4 (0x8004e568)
@@ -168,6 +169,15 @@ static bool findJsonString(const String& str, const String& key, String& out) {
   return true;
 }
 
+static const char* getStoveModelName(long modelId) {
+  switch (modelId) {
+    case 10: return "INTERNO";
+    case 13: return "DOMO";
+    case 23: return "DOMO BACK";
+    default: return "RIKA";
+  }
+}
+
 // ------------------------------------------------------------------- API web V2
 static String jsonState() {
   const auto& m = g_link->model();
@@ -210,6 +220,7 @@ static String jsonState() {
 
   long modelId = (m.sensors_pos.size() > 36) ? m.sensors_pos[36] : 13;
   auto itMod = m.sensors.find("model"); if (itMod != m.sensors.end()) modelId = itMod->second;
+  const char* modelName = getStoveModelName(modelId);
 
   long appVer = (m.sensors_pos.size() > 38) ? m.sensors_pos[38] : 229;
   auto itAV = m.sensors.find("appVerBoard"); if (itAV != m.sensors.end()) appVer = itAV->second;
@@ -219,29 +230,29 @@ static String jsonState() {
 
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
-  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+  else if (m.controls_pos.size() >= 5) curOn = m.controls_pos[1];
 
   auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
-  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+  else if (m.controls_pos.size() >= 5) curMode = m.controls_pos[2];
 
   auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
-  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+  else if (m.controls_pos.size() >= 5) curStage = m.controls_pos[3];
 
   auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
-  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+  else if (m.controls_pos.size() >= 5) curRoom = m.controls_pos[4];
 
   const char* stName = "unknown";
-  const char* stLabel = "Inconnu";
+  const char* stLabel = "Unknown";
   bool isBurning = false;
   switch (mainSt) {
-    case 0: stName = "off"; stLabel = "Arrêt"; isBurning = false; break;
-    case 1: stName = "standby"; stLabel = "Veille (Standby)"; isBurning = false; break;
-    case 2: stName = "ignition"; stLabel = "Allumage (Ignition)"; isBurning = true; break;
-    case 3: stName = "flame_start"; stLabel = "Démarrage flamme"; isBurning = true; break;
-    case 4: stName = "heating"; stLabel = "En régulation (Chauffe)"; isBurning = true; break;
-    case 5: stName = "cleaning"; stLabel = "Nettoyage grille"; isBurning = true; break;
-    case 6: stName = "burn_off"; stLabel = "Extinction (Burn off)"; isBurning = true; break;
-    case 7: stName = "splitlog"; stLabel = "Bûches (Splitlog)"; isBurning = true; break;
+    case 0: stName = "off"; stLabel = "Off"; isBurning = false; break;
+    case 1: stName = "standby"; stLabel = "Standby"; isBurning = false; break;
+    case 2: stName = "ignition"; stLabel = "Ignition"; isBurning = true; break;
+    case 3: stName = "flame_start"; stLabel = "Flame Start"; isBurning = true; break;
+    case 4: stName = "heating"; stLabel = "Heating"; isBurning = true; break;
+    case 5: stName = "cleaning"; stLabel = "Grate Cleaning"; isBurning = true; break;
+    case 6: stName = "burn_off"; stLabel = "Burn Off"; isBurning = true; break;
+    case 7: stName = "splitlog"; stLabel = "Split Log"; isBurning = true; break;
   }
 
   const char* modeName = "comfort";
@@ -256,7 +267,7 @@ static String jsonState() {
   float fTempF = (float)fTemp;
   float bTempF = (float)bTemp;
 
-  char buf[1200];
+  char buf[1400];
   snprintf(buf, sizeof(buf),
     "{"
     "\"device\":{"
@@ -280,6 +291,7 @@ static String jsonState() {
       "\"error_code\":%ld,"
       "\"error_sub\":%ld,"
       "\"model\":%ld,"
+      "\"model_name\":\"%s\","
       "\"mainboard_version\":\"%ld.%02ld\","
       "\"firmware_build\":\"%ld\""
     "},"
@@ -311,7 +323,7 @@ static String jsonState() {
     isBurning ? "true" : "false",
     errMask != 0 ? "true" : "false",
     errMask, errSub,
-    modelId, appVer / 100, appVer % 100, buildVer,
+    modelId, modelName, appVer / 100, appVer % 100, buildVer,
     rTempF, fTempF, bTempF, pTotal, pHours, sCount, idFan, auger,
     (curOn == 1) ? "true" : "false",
     modeName, curMode, rTargetF, curStage
@@ -321,6 +333,7 @@ static String jsonState() {
   j += "\"wifi_mode\":\"" + String(WiFi.getMode()==WIFI_AP?"AP":"STA") + "\",";
   j += "\"ip\":\"" + (WiFi.getMode()==WIFI_AP?WiFi.softAPIP():WiFi.localIP()).toString() + "\",";
   j += "\"wifi_connected\":" + String(WiFi.status()==WL_CONNECTED?"true":"false") + ",";
+  j += "\"uptime_seconds\":" + String(millis() / 1000UL) + ",";
   j += "\"write_enabled\":true,";
   j += "\"version_ack\":" + String(m.version_ack ? "true" : "false") + ",";
   j += "\"generation\":" + String(m.generation) + ",";
@@ -567,6 +580,11 @@ static void handleApiSensors() {
   addKV("serviceCountdownKg", String(sCount));
   addKV("idFan", String(idFan));
 
+  long modelId = (m.sensors_pos.size() > 36) ? m.sensors_pos[36] : 13;
+  auto itMod = m.sensors.find("model"); if (itMod != m.sensors.end()) modelId = itMod->second;
+  addKV("model", String(modelId));
+  addKV("modelName", getStoveModelName(modelId));
+
   // Contrôles en lecture
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
@@ -741,13 +759,13 @@ static void handleApiControls() {
   const auto& m = g_link->model();
   long curOn = 0, curMode = 2, curStage = 70, curRoom = 200;
   auto itOn = m.controls.find("onOff"); if (itOn != m.controls.end()) curOn = itOn->second;
-  else if (m.controls_pos.size() > 1) curOn = m.controls_pos[1];
+  else if (m.controls_pos.size() >= 5) curOn = m.controls_pos[1];
   auto itMode = m.controls.find("mode"); if (itMode != m.controls.end()) curMode = itMode->second;
-  else if (m.controls_pos.size() > 2) curMode = m.controls_pos[2];
+  else if (m.controls_pos.size() >= 5) curMode = m.controls_pos[2];
   auto itStage = m.controls.find("targetStage"); if (itStage != m.controls.end()) curStage = itStage->second;
-  else if (m.controls_pos.size() > 3) curStage = m.controls_pos[3];
+  else if (m.controls_pos.size() >= 5) curStage = m.controls_pos[3];
   auto itRoom = m.controls.find("roomTarget"); if (itRoom != m.controls.end()) curRoom = itRoom->second;
-  else if (m.controls_pos.size() > 4) curRoom = m.controls_pos[4];
+  else if (m.controls_pos.size() >= 5) curRoom = m.controls_pos[4];
 
   long finalOn = (newOn >= 0) ? newOn : curOn;
   long finalMode = (newMode >= 0) ? newMode : curMode;
@@ -762,6 +780,7 @@ static void handleApiControls() {
   full.push_back({"roomTarget", finalRoom});
 
   g_link->applyControls(full);
+  lastPoll = millis();
 
   const char* modeName = (finalMode == 0) ? "manual" : ((finalMode == 1) ? "auto" : "comfort");
   float rTargetF = finalRoom / 10.0f;
@@ -804,12 +823,13 @@ void setup() {
 
   g_link = new firenet::DongleLink(txToStove, nowMs);
   g_link->onDebug([](const char* dir, const std::string& f){
-    if (strcmp(dir, "drop") == 0) return;    // tracer rx ET tx (diagnostic trame)
-    DBG.printf("[%s %u] ", dir, (unsigned)f.size());
-    for (char c : f) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");
+    if (strcmp(dir, "drop") == 0) return;    // trace rx AND tx (frame diagnostics)
+    std::string safe = firenet::sanitizeForLog(f);
+    DBG.printf("[%s %u] ", dir, (unsigned)safe.size());
+    for (char c : safe) { if (c=='\n') DBG.print("\\n"); else if (c=='\r') DBG.print("\\r");
                        else if (c>=32 && c<127) DBG.print(c); else DBG.print('.'); }
     DBG.println();
-    logEntry(dir, f);
+    logEntry(dir, safe);
   });
 
   prefs.begin("firenet", true);
@@ -906,7 +926,6 @@ void setup() {
 static uint32_t g_grCount = 0;
 
 // ---------------------------------------------------------------------- loop
-static uint32_t lastPoll = 0;
 void loop() {
   // 0) connect WiFi différé (laisse le driver se poser après config bas niveau)
   if (g_wifiConnectAt && millis() >= g_wifiConnectAt) {

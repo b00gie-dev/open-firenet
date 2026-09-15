@@ -92,6 +92,39 @@ int main(){
     clk+=50; l2.poll();
     CH("continuation rejetée après clôture", l2.model().sensors_pos.size()==53);
   }
-  std::cout << ok << " ok, " << ko << " échecs\n";
+  // applyControls immediately triggers GET_CONTROLS=1 + GET_REVISION + 2x TRANSFER_COMPLETED
+  {
+    std::string sent; uint32_t c3=0;
+    DongleLink l3([&](const uint8_t*d,size_t n){ sent.append((const char*)d,n); },
+                  [&](){ return c3; });
+    l3.applyControls({{"onOff",1},{"mode",1},{"targetStage",80},{"roomTarget",220}});
+    CH("applyControls queues 6 frames (drain + apply + refresh)", l3.txPending()==6);
+    // Frames 1-2: preventive drain (§13.2)
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("preventive drain emitted", sent.find("TRANSFER_COMPLETED")!=std::string::npos);
+    // Frame 3: GET_CONTROLS=1
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("frame 3 GET_CONTROLS=1", sent.find("GET_CONTROLS=1;")!=std::string::npos);
+    CH("control parameters applied", sent.find("onOff=1;")!=std::string::npos && sent.find("mode=1;")!=std::string::npos);
+    // Frame 4: immediate GET_REVISION
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("frame 4 GET_REVISION", sent.find("GET_REVISION=")!=std::string::npos);
+    // Frames 5-6: post-command TRANSFER_COMPLETED
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    c3+=DongleLink::TX_GAP_MS; l3.poll();
+    CH("frames 5-6 TRANSFER_COMPLETED", l3.txIdle());
+
+    // Simulate partial frame received from stove: POST_CONTROLS with only revision and roomTarget
+    std::string partial = "POST_CONTROLS=0; revision=0; roomTarget=210; ";
+    for (char c : partial) l3.onByte(c);
+    c3 += 60; l3.poll();
+    CH("partial controls merged", l3.model().controls.at("roomTarget")==210);
+    CH("controls_pos maintains 5 elements", l3.model().controls_pos.size()==5);
+    CH("controls_pos[4] updated", l3.model().controls_pos[4]==210);
+    CH("controls_pos[1] onOff preserved", l3.model().controls_pos[1]==1);
+    CH("controls_pos[2] mode preserved", l3.model().controls_pos[2]==1);
+  }
+  std::cout << ok << " ok, " << ko << " failures\n";
   return ko ? 1 : 0;
 }

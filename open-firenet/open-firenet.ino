@@ -383,15 +383,41 @@ static void handleRestart() {
 }
 
 
-// POST /api/wifi  ssid=<..>&pass=<..>  -> enregistre et redémarre en STA
+// POST /api/wifi  ssid=<..>&pass=<..>  -> enregistre et redémarre en STA.
+// Répond en HTML (et non JSON) : la page est soumise par un <form> natif afin de
+// fonctionner dans les navigateurs de portail captif (macOS/iOS) qui bloquent fetch()
+// et suppriment confirm()/alert() (issue #8). La navigation affiche cette page de
+// confirmation, puis la carte redémarre.
 static void handleWifi() {
-  if (!web.hasArg("ssid")) { web.send(400,"application/json",
-      "{\"error\":\"ssid requis\"}"); return; }
+  if (!web.hasArg("ssid") || web.arg("ssid").length() == 0) {
+    web.send(400, "text/html; charset=utf-8",
+      "<!doctype html><meta charset=\"utf-8\">"
+      "<body style=\"font-family:sans-serif;padding:24px\">"
+      "<h2>SSID manquant / Missing SSID</h2><p><a href=\"/\">&larr; Retour / Back</a></p>");
+    return;
+  }
   prefs.begin("firenet", false);
   prefs.putString("ssid", web.arg("ssid"));
   prefs.putString("pass", web.hasArg("pass") ? web.arg("pass") : "");
   prefs.end();
-  web.send(200,"application/json","{\"ok\":true,\"reboot\":true}");
+  web.send(200, "text/html; charset=utf-8",
+    "<!doctype html><html><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>Open-Firenet</title></head>"
+    "<body style=\"margin:0;background:#0c0f17;color:#f1f5f9;font-family:sans-serif;"
+    "display:flex;align-items:center;justify-content:center;min-height:100vh;"
+    "padding:24px;box-sizing:border-box\">"
+    "<div style=\"background:#161b26;border:1px solid #232a3b;border-radius:16px;"
+    "padding:32px;max-width:440px;width:100%;text-align:center\">"
+    "<div style=\"font-size:48px;margin-bottom:16px\">&#128260;</div>"
+    "<h2 style=\"margin:0 0 12px\">Red&eacute;marrage&hellip; / Rebooting&hellip;</h2>"
+    "<p style=\"color:#94a3b8;line-height:1.6;margin:0 0 24px\">"
+    "R&eacute;seau enregistr&eacute;. Reconnectez votre appareil &agrave; votre WiFi "
+    "habituel, puis ouvrez :<br>Settings saved. Reconnect your device to your home WiFi, "
+    "then open:</p>"
+    "<a href=\"http://open-firenet.local\" style=\"display:inline-block;width:100%;"
+    "box-sizing:border-box;background:#38bdf8;color:#0c0f17;font-weight:700;padding:14px;"
+    "border-radius:10px;text-decoration:none\">http://open-firenet.local</a></div></body></html>");
   delay(300); ESP.restart();
 }
 // POST /api/forget -> efface le WiFi, repasse en AP au prochain boot

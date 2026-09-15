@@ -589,22 +589,25 @@ tr:hover td { background: rgba(255,255,255,0.02); }
         <label id="lblJoinWifi" style="font-size:0.9rem;font-weight:600">Rejoindre un réseau WiFi (2.4 GHz) :</label>
         <button class="btn-lang" id="btnScan" style="padding:4px 10px;font-size:0.8rem" onclick="scanWifi()">🔄 Scanner</button>
       </div>
-      <div style="display:flex;gap:10px;flex-direction:column">
+      <!-- Native HTML form POST (no fetch/confirm/alert): works inside captive
+           portal browsers (macOS/iOS) that block XHR to local IPs. -->
+      <form id="wifiForm" method="POST" action="/api/wifi" style="display:flex;gap:10px;flex-direction:column">
         <select class="input-text" id="ssidSelect" onchange="onSelectSsid(this.value)">
           <option value="">-- Choisir un réseau détecté --</option>
         </select>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <input class="input-text" id="newSsid" placeholder="Nom du réseau (SSID)" style="flex:1;min-width:180px">
+          <input class="input-text" id="newSsid" name="ssid" placeholder="Nom du réseau (SSID)" style="flex:1;min-width:180px" required>
           <div style="flex:1;min-width:180px;position:relative;display:flex;align-items:center">
-            <input class="input-text" id="newPass" type="password" placeholder="Mot de passe" style="width:100%;padding-right:36px">
+            <input class="input-text" id="newPass" name="pass" type="password" placeholder="Mot de passe" style="width:100%;padding-right:36px">
             <span style="position:absolute;right:10px;cursor:pointer;user-select:none;font-size:1.1rem" onclick="togglePassView()" title="Afficher/Masquer">👁️</span>
           </div>
         </div>
-      </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn-lock" id="btnForgetWifi" style="color:#ef4444;border-color:#ef4444" onclick="forgetWifi()">Oublier le WiFi</button>
-        <button class="power-btn" id="btnSaveWifi" style="padding:8px 16px;font-size:0.9rem" onclick="saveWifi()">Enregistrer & Redémarrer</button>
-      </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button type="button" class="btn-lock" id="btnForgetWifi" style="color:#ef4444;border-color:#ef4444" onclick="forgetWifi()">Oublier le WiFi</button>
+          <button type="submit" class="power-btn" id="btnSaveWifi" style="padding:8px 16px;font-size:0.9rem">Enregistrer & Redémarrer</button>
+        </div>
+        <p id="captiveHint" style="font-size:0.8rem;color:var(--text-dim);margin:2px 0 0 0;text-align:center">Si le bouton ne réagit pas, ouvrez http://192.168.4.1 dans Safari ou Chrome. · If the button does nothing, open http://192.168.4.1 in Safari or Chrome.</p>
+      </form>
     </div>
   </div>
 
@@ -1240,29 +1243,10 @@ function applyStageTarget() {
   sendControl("targetStage", v);
 }
 
-async function saveWifi() {
-  const t = I18N[curLang] || I18N.fr;
-  const s = document.getElementById('newSsid').value.trim();
-  const p = document.getElementById('newPass').value;
-  if (!s) { alert("SSID required"); return; }
-  if (confirm(t.confirmSaveWifi + s + " ?")) {
-    const body = new URLSearchParams({ ssid: s, pass: p });
-    try {
-      await fetch('/api/wifi', { method: 'POST', body: body });
-    } catch (e) {}
-    document.body.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0c0f17;color:#f1f5f9;font-family:sans-serif;padding:24px;box-sizing:border-box;">
-        <div style="background:#161b26;border:1px solid #232a3b;border-radius:16px;padding:32px;max-width:440px;width:100%;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.6);">
-          <div style="font-size:48px;margin-bottom:16px;">🔄</div>
-          <h2 style="font-size:20px;font-weight:700;margin:0 0 12px 0;">${t.rebootTitle}</h2>
-          <p style="font-size:14px;color:#94a3b8;line-height:1.6;margin:0 0 24px 0;">${t.rebootDesc}</p>
-          <a href="http://open-firenet.local" style="display:inline-block;width:100%;box-sizing:border-box;background:#38bdf8;color:#0c0f17;font-weight:700;padding:14px;border-radius:10px;text-decoration:none;font-size:16px;box-shadow:0 4px 12px rgba(56,189,248,0.3);">http://open-firenet.local</a>
-        </div>
-      </div>
-    `;
-    alert(t.saveWifiSuccess);
-  }
-}
+// WiFi credentials are submitted by the native <form> POST to /api/wifi (see the
+// Network tab). The board saves them and returns a reboot confirmation page. A form
+// submission is used instead of fetch()/confirm()/alert() because captive portal
+// browsers (macOS/iOS) block XHR to local IPs and suppress those dialogs (issue #8).
 
 async function forgetWifi() {
   const t = I18N[curLang] || I18N.fr;

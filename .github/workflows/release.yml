@@ -112,11 +112,13 @@ jobs:
 
       - name: Sign Checksums with Minisign
         if: env.MINISIGN_SECRET_KEY != ''
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
-          echo "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
-          minisign -S -m dist/SHA256SUMS -s /tmp/minisign.key -x dist/SHA256SUMS.minisig -t "Release ${{ github.ref_name }}"
+          if [[ "$MINISIGN_SECRET_KEY" != *"untrusted comment"* ]]; then
+            printf "untrusted comment: minisign encrypted secret key\n%s\n" "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
+          else
+            printf "%s\n" "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
+          fi
+          minisign -S -m dist/SHA256SUMS -s /tmp/minisign.key -x dist/SHA256SUMS.minisig -t "Release ${{ github.ref_name }}" </dev/null
           rm -f /tmp/minisign.key
           minisign -V -m dist/SHA256SUMS -p minisign.pub -x dist/SHA256SUMS.minisig
           echo "Minisign signature verified successfully."

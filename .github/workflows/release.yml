@@ -14,6 +14,8 @@ jobs:
   release:
     name: Build, Sign & Release Firmware
     runs-on: ubuntu-latest
+    env:
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -132,6 +134,7 @@ jobs:
         with:
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             dist/open-firenet-factory.bin
             dist/open-firenet-ota.bin

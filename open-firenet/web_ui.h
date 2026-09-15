@@ -406,6 +406,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   </div>
   <div class="header-actions">
     <select class="lang-select" id="langSelect" onchange="onSelectLang(this.value)">
+      <option value="de">🇩🇪 Deutsch</option>
       <option value="fr">🇫🇷 Français</option>
       <option value="en">🇬🇧 English</option>
     </select>
@@ -900,6 +901,129 @@ const I18N = {
       serviceOffset: "Service counter offset",
       serviceMinutes: "Total elapsed service minutes"
     }
+  },
+  de: {
+    pageTitle: "Open-Firenet — Dashboard",
+    langNext: "EN",
+    online: "Online",
+    waiting: "Warte auf Ofen",
+    connected: "Ofen verbunden",
+    offline: "Offline",
+    commError: "Kommunikationsfehler",
+    powerOn: "Einschalten",
+    powerOff: "Ausschalten",
+    confirmOn: "Möchten Sie den Ofen wirklich EINSCHALTEN?",
+    confirmOff: "Möchten Sie den Ofen wirklich AUSSCHALTEN?",
+    roomHeader: "Raumtemperatur",
+    roomTargetPrefix: "Sollwert: ",
+    flameHeader: "Brennkammertemperatur",
+    flameSub: "Thermoelement-Sensor",
+    flameLive: "Aktive Verbrennung",
+    flameCombustion: "Verbrennung",
+    flameCold: "Kalt / Inaktiv",
+    powerHeader: "Leistung",
+    modePrefix: "Modus: ",
+    stageTgtPrefix: "Ziel: ",
+    pelletsHeader: "Zähler & Wartung",
+    serviceCountPrefix: "Wartung in: ",
+    pelletHoursSuffix: " h Pellets",
+    deckTitle: "Steuerung & Sollwerte",
+    regulationMode: "REGELUNGSMODUS",
+    modeTitle2: "Komfort",
+    modeDesc2: "Raumtemperatursensor",
+    modeTitle1: "Auto",
+    modeDesc1: "Zeitgesteuerte Heizung",
+    modeTitle0: "Manuell",
+    modeDesc0: "Feste Leistung (%)",
+    sliderTemp: "Raum-Sollwert (Komfort)",
+    btnApplyTemp: "Temperatur übernehmen",
+    sliderStage: "Leistung (Auto & Manuell)",
+    btnApplyStage: "Leistung übernehmen",
+    tabTelemetry: "📊 Vollständige Telemetrie",
+    tabNetwork: "📶 Netzwerk & WLAN",
+    tabLink: "⚙️ USB CDC Verbindung",
+    tabLogs: "📜 CDC Protokolle",
+    logRx: "Ofen → Dongle (RX)",
+    logTx: "Dongle → Ofen (TX)",
+    logAuto: "Auto",
+    logDownload: "⬇ Herunterladen",
+    logClear: "Löschen",
+    btnRestart: "🔄 Dongle neustarten",
+    confirmRestart: "Dongle neustarten? Die Verbindung zum Ofen wird für einige Sekunden unterbrochen.",
+    restartToast: "Neustart läuft…",
+    sensorSearchPlaceholder: "🔍 53 Sensoren filtern...",
+    thSensorName: "Sensor",
+    thSensorId: "Kennung",
+    thSensorVal: "Wert",
+    netTitle: "Netzwerkkonfiguration",
+    netModePrefix: "Modus: ",
+    netRssiPrefix: "RSSI Signal: ",
+    joinWifi: "WLAN-Netzwerk beitreten (2,4 GHz):",
+    btnScan: "🔄 Scannen",
+    selectNetwork: "-- Erkanntes Netzwerk auswählen --",
+    scanning: "2,4 GHz Netzwerke werden gescannt...",
+    scanError: "Fehler beim WLAN-Scan",
+    apBannerTitle: "Access Point Modus aktiv",
+    apBannerDesc: "Wählen Sie unten Ihr WLAN aus, um Open-Firenet mit Ihrem Router zu verbinden.",
+    ssidPlaceholder: "Netzwerkname (SSID)",
+    passPlaceholder: "Passwort",
+    btnForgetWifi: "WLAN vergessen",
+    btnSaveWifi: "Speichern & Neustarten",
+    cdcPort: "USB CDC Serielle Verbindung",
+    cdcAck: "Ofenversion bestätigt",
+    cdcGen: "Protokollgeneration",
+    cdcRev: "Aktuelle Ofenrevision",
+    cdcIn: "Eingehende Rahmen (IN)",
+    cdcOut: "Ausgehende Rahmen (OUT)",
+    cdcSpeed: "Betriebsbereit (Full Speed)",
+    lblUptime: "Dongle Betriebszeit",
+    lblNetUptimePrefix: "Betriebszeit: ",
+    yes: "Ja",
+    no: "Nein",
+    confirmSaveWifi: "Der Dongle wird neu gestartet und versucht, sich zu verbinden mit ",
+    saveWifiSuccess: "Einstellungen gespeichert! Der Dongle startet neu.\n\nVerbinden Sie Ihr Gerät wieder mit Ihrem heimischen WLAN und gehen Sie zu:\nhttp://open-firenet.local",
+    rebootTitle: "Verbindung zum Heimnetzwerk wird hergestellt...",
+    rebootDesc: "Der Dongle startet neu, um eine Verbindung zu Ihrem WLAN-Router herzustellen. Verbinden Sie Ihr Smartphone oder Ihren PC wieder mit Ihrem Heimnetzwerk und rufen Sie dann das Dashboard auf:",
+    confirmForgetWifi: "WLAN-Einstellungen löschen und zurück in den Access Point Modus wechseln?",
+    forgetWifiSuccess: "WLAN gelöscht. Dongle startet im AP-Modus neu.",
+    orderSent: "Befehl gesendet: ",
+    errorPrefix: "Fehler: ",
+    netError: "Netzwerkfehler",
+    stateMap: {
+      0: { title: "Aus", desc: "Ofen komplett ausgeschaltet", icon: "🛑", active: false },
+      1: { title: "Bereitschaft (Standby)", desc: "Wartet auf Wärmeanforderung", icon: "⚪", active: false },
+      2: { title: "Zündung", desc: "Glühkerze & Pellets werden vorgeheizt", icon: "🔥", active: true },
+      3: { title: "Flammenstart", desc: "Verbrennung wird stabilisiert", icon: "🔥", active: true },
+      4: { title: "Heizen", desc: "Aktive geregelte Verbrennung", icon: "🔥", active: true },
+      5: { title: "Rostreinigung", desc: "Automatischer Entaschungszyklus", icon: "🧹", active: true },
+      6: { title: "Abbrand (Burn off)", desc: "Abkühlung & Nachbelüftung", icon: "💨", active: true }
+    },
+    modeMap: { 0: "Manuell (%)", 1: "Automatisch", 2: "Komfort" },
+    sensorDesc: {
+      roomTemp: "Gemessene Raumtemperatur (°C)",
+      flame: "Brennkammertemperatur (°C)",
+      boardSensor: "Hauptplatine Temperatur (°C)",
+      pelletsTotal: "Gesamter Pelletverbrauch (kg)",
+      pelletHours: "Pellet-Betriebsstunden gesamt (h)",
+      serviceCountdown: "Wartungs-Countdown (kg)",
+      mainState: "Hauptbetriebszustand",
+      subState: "Detailierter Unterzustand",
+      stageCur: "Aktuelle Leistung (%)",
+      stageCur1: "Angeforderte Leistung (%)",
+      stageTgt2: "Zielleistung (%)",
+      idFanMeas: "Rauchsauger-Drehzahl (RPM)",
+      idFanSet: "Rauchsauger-Sollwert (RPM)",
+      augerSet: "Pelletförderschnecke Sollwert (RPM)",
+      model: "Ofenmodell",
+      appVerBoard: "Firmware-Version Hauptplatine",
+      firmwareBuild: "Build-Unterversion",
+      language: "Konfigurierte Sprache (3 = FR)",
+      rssi: "WLAN-Signalstärke (dBm)",
+      errMask32: "Aktive Fehlerbitmaske (32 Bit)",
+      errSub: "Aktiver Fehler-Untercode",
+      serviceOffset: "Wartungszähler-Offset",
+      serviceMinutes: "Gesamte vergangene Wartungsminuten"
+    }
   }
 };
 
@@ -968,7 +1092,7 @@ function applyLang() {
 }
 
 function onSelectLang(l) {
-  curLang = (l === 'en') ? 'en' : 'fr';
+  curLang = (l === 'fr' || l === 'en' || l === 'de') ? l : 'fr';
   localStorage.setItem('lang', curLang);
   applyLang();
   if (lastState) renderSensors(lastState.raw_sensors || lastState.sensors || {}, document.getElementById('sensorSearch') ? document.getElementById('sensorSearch').value : '');

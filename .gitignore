@@ -9,3 +9,5 @@ open-firenet/build/
 *.backup*
 *.key
 minisign.key
+MESSAGE_CYRIL.md
+PR_DESCRIPTION.md

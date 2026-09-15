@@ -29,7 +29,11 @@
 // on instancie le CDC et on fixe VID/PID AVANT USB.begin(). Serial = UART0 (debug).
 USBCDC USBSerial;
 
-// ----------------------------------------------------------------- config USB
+// --------------------------------------------------------- version & config USB
+#ifndef OPENFIRENET_VERSION
+#define OPENFIRENET_VERSION "2.0.0"
+#endif
+
 // Identifiants USB Open-Firenet
 #define OPENFIRENET_USB_VID 0x303A
 #define OPENFIRENET_USB_PID 0x819A
@@ -272,7 +276,9 @@ static String jsonState() {
     "{"
     "\"device\":{"
       "\"name\":\"Open-Firenet\","
-      "\"version\":\"2.0.0\","
+      "\"version\":\"" OPENFIRENET_VERSION "\","
+      "\"app_version\":\"" OPENFIRENET_VERSION "\","
+      "\"firmware_version\":\"" OPENFIRENET_VERSION "\","
       "\"ip\":\"%s\","
       "\"mac\":\"%s\","
       "\"wifi_ssid\":\"%s\","
@@ -372,8 +378,17 @@ static String jsonState() {
   return j;
 }
 
-static void handleState()  { sendCors(); web.send(200, "application/json", jsonState()); }
-static void handleRoot()   { web.send_P(200, "text/html", INDEX_HTML); }
+static void handleState()   { sendCors(); web.send(200, "application/json", jsonState()); }
+static void handleVersion() {
+  sendCors();
+  char buf[220];
+  snprintf(buf, sizeof(buf),
+    "{\"app\":\"Open-Firenet\",\"version\":\"" OPENFIRENET_VERSION "\",\"build_date\":\"%s\",\"build_time\":\"%s\",\"target\":\"ESP32-S3\"}",
+    __DATE__, __TIME__
+  );
+  web.send(200, "application/json", buf);
+}
+static void handleRoot()    { web.send_P(200, "text/html", INDEX_HTML); }
 static void handleArm()    { sendCors(); web.send(200, "application/json", "{\"write\":true}"); }
 
 static void handleRestart() {
@@ -909,6 +924,7 @@ void setup() {
 
   web.enableCORS(true);
   web.on("/", handleRoot);
+  web.on("/api/version", handleVersion);
   web.on("/api/state", handleState);
   web.on("/api/control", handleApiControls);
   web.on("/api/controls", handleApiControls);

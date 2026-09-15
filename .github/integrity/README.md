@@ -10,7 +10,7 @@ Lors de chaque exécution de la CI et de la Release :
    ```bash
    find ~/.arduino15/packages -type f -exec sha256sum {} + | sort -k2 | sha256sum
    ```
-3. Si un fichier nommé `esp32-core-<version>.sha256` est présent dans ce dossier (ex. `esp32-core-3.3.8.sha256`), la CI vérifie que le hash correspond **strictement**.
+3. Si un fichier nommé `esp32-core-<version>.sha256` est présent dans ce dossier (ex. `esp32-core-3.3.11.sha256`), la CI vérifie que le hash correspond **strictement**.
 4. En cas de non-concordance (fichier altéré, outil modifié ou corrompu), le job échoue immédiatement avant toute compilation.
 
 ## Comment épingler ou mettre à jour un hash

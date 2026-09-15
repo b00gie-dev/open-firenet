@@ -47,9 +47,35 @@ The stove acts as USB host; the ESP32-S3 acts as USB device (CDC class). The fir
 
 ---
 
-## Flashing
+## Flashing & Installation
 
-### Linux (recommended)
+### Option 1 — Open-Firenet Installer (GUI & CLI — Recommended)
+
+The easiest and recommended way to install, flash, configure, and wirelessly update your Open-Firenet dongle on **Windows**, **macOS**, and **Linux** without needing Python, `arduino-cli`, or `esptool`.
+
+Download the standalone executable for your operating system from [**Open-Firenet Installer Releases**](https://github.com/openfirenet/open-firenet-installer/releases):
+
+| Operating System | Pre-compiled Standalone Binary |
+|---|---|
+| **Windows (x86_64)** | `open-firenet-installer-windows-x86_64.exe` |
+| **macOS Apple Silicon (M1/M2/M3/M4)** | `open-firenet-installer-macos-arm64` |
+| **macOS Intel (x86_64)** | `open-firenet-installer-macos-x86_64` |
+| **Linux (x86_64)** | `open-firenet-installer-linux-x86_64` |
+
+**Key Capabilities:**
+- 🔍 **Auto-detection**: Automatically discovers connected ESP32-S3 serial ports and scans your local network for existing dongles.
+- 📦 **Automated Downloads & Verification**: Pulls official release binaries and validates integrity via **Minisign** cryptographic signatures and SHA-256 checksums.
+- ⚡ **1-Click Flash**: Safe flashing with choice between *Update* (keeps stored Wi-Fi config) and *Full Factory Reset*.
+- 📶 **USB Wi-Fi Configuration**: Easily set your home Wi-Fi SSID and password over serial.
+- 📡 **Wireless OTA Updates**: Update the dongle remotely over Wi-Fi when already installed on your stove.
+
+👉 Full documentation and source code: [**openfirenet/open-firenet-installer**](https://github.com/openfirenet/open-firenet-installer)
+
+---
+
+### Option 2 — Manual flashing scripts (Developers / Advanced users)
+
+#### Linux
 
 **Requirements:** `arduino-cli`, `esptool`, ESP32 Arduino core 3.x
 
@@ -64,7 +90,7 @@ The script compiles then flashes bootloader + partition table + app. The NVS par
 
 ---
 
-### macOS
+#### macOS
 
 **Requirements:** [arduino-cli](https://arduino.github.io/arduino-cli/installation/), [esptool](https://docs.espressif.com/projects/esptool/en/latest/esp32/installation.html), ESP32 Arduino core 3.x
 
@@ -91,7 +117,7 @@ chmod +x flash.sh
 
 ---
 
-### Windows
+#### Windows
 
 The `flash.sh` script requires a bash shell. Two options:
 

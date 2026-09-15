@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'feat/**', 'test/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  unit-tests:
+    name: Native Protocol Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run unit test suite
+        run: |
+          chmod +x test/build_and_test.sh
+          ./test/build_and_test.sh
+
+  esp32-compile:
+    name: ESP32-S3 Firmware Compilation
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Arduino packages
+        uses: actions/cache@v4
+        id: arduino-cache
+        with:
+          path: |
+            ~/.arduino15/packages
+            ~/.arduino15/staging
+          key: esp32-core-3.3.8-${{ runner.os }}
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 Platform Core
+        if: steps.arduino-cache.outputs.cache-hit != 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.8
+
+      - name: Restore Arduino CLI Config
+        if: steps.arduino-cache.outputs.cache-hit == 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+
+      - name: Compile ESP32-S3 Sketch
+        run: |
+          mkdir -p .build
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,FlashSize=4M,PartitionScheme=min_spiffs \
+            --output-dir .build \
+            open-firenet/open-firenet.ino

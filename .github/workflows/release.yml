@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: Build, Sign & Release Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run native unit tests
+        run: |
+          chmod +x test/build_and_test.sh
+          ./test/build_and_test.sh
+
+      - name: Cache Arduino packages
+        uses: actions/cache@v4
+        id: arduino-cache
+        with:
+          path: |
+            ~/.arduino15/packages
+            ~/.arduino15/staging
+          key: esp32-core-3.3.8-${{ runner.os }}
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 Platform Core
+        if: steps.arduino-cache.outputs.cache-hit != 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.8
+
+      - name: Restore Arduino CLI Config
+        if: steps.arduino-cache.outputs.cache-hit == 'true'
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+
+      - name: Compile ESP32-S3 Firmware
+        run: |
+          mkdir -p .build
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,FlashSize=4M,PartitionScheme=min_spiffs \
+            --output-dir .build \
+            open-firenet/open-firenet.ino
+
+      - name: Package Release Assets
+        run: |
+          mkdir -p dist
+          cp .build/open-firenet.ino.merged.bin dist/open-firenet-factory.bin
+          cp .build/open-firenet.ino.bin dist/open-firenet-ota.bin
+          cp .build/open-firenet.ino.bootloader.bin dist/open-firenet-bootloader.bin
+          cp .build/open-firenet.ino.partitions.bin dist/open-firenet-partitions.bin
+
+          cd dist
+          sha256sum open-firenet-factory.bin open-firenet-ota.bin open-firenet-bootloader.bin open-firenet-partitions.bin > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Install Minisign
+        run: |
+          curl -sL https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz | tar -xz -C /tmp/
+          sudo cp /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+          minisign -v
+
+      - name: Sign Checksums with Minisign
+        if: env.MINISIGN_SECRET_KEY != ''
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          echo "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
+          minisign -S -m dist/SHA256SUMS -s /tmp/minisign.key -x dist/SHA256SUMS.minisig -t "Release ${{ github.ref_name }}"
+          rm -f /tmp/minisign.key
+          minisign -V -m dist/SHA256SUMS -p minisign.pub -x dist/SHA256SUMS.minisig
+          echo "Minisign signature verified successfully."
+
+      - name: Generate SLSA Build Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/open-firenet-factory.bin
+            dist/open-firenet-ota.bin
+            dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/open-firenet-factory.bin
+            dist/open-firenet-ota.bin
+            dist/open-firenet-bootloader.bin
+            dist/open-firenet-partitions.bin
+            dist/SHA256SUMS
+            dist/SHA256SUMS.minisig

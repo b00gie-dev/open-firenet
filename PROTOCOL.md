@@ -260,7 +260,7 @@ Indices not listed read `0` in standby and are not yet identified.
 
 ### Known Stove Models (`sensors[36]` / `model`)
 
-The stove reports its hardware model identifier in sensor index 36. This ID matches the 3-digit code in official Rika firmware binaries (`RIKA_<type>_<modelId>_<boardVer>_<Description>_<ModelName>_V<Version>.bin`) and the byte stored at header offset `0x0006` in test firmware:
+The stove reports its hardware model identifier in sensor index 36. This ID matches the 3-digit code in official Rika firmware binaries (`RIKA_<type>_<modelId>_<boardVer>_<Description>_<ModelName>_V<Version>.bin`) and the byte stored at header offset `0x0006` in test firmware. The table below was built by downloading every official firmware package from Rika's update servers and reading the model ID/code straight out of each binary's filename and header — not guessed or inferred from the wire protocol.
 
 | Model ID | Hex | Firmware Code | Commercial Model | Type |
 |:---:|:---:|:---:|:---|:---|

@@ -163,7 +163,7 @@ static const char* CONTROL_LABELS[] = {
 };
 static const int NUM_CONTROL_LABELS = 5;
 
-// index = position du capteur ; couvre les positions prouvées jusqu'à 52 (53 au total).
+// index = position du capteur ; couvre les positions prouvées jusqu'à 54 (55 au total).
 static const char* SENSOR_LABELS[] = {
   /*0*/"roomTemp",      /*1*/"flame",       /*2*/"",           /*3*/"errMask32",
   /*4*/"errSub",        /*5*/"stateMask",   /*6*/"",           /*7*/"augerSet",
@@ -179,8 +179,11 @@ static const char* SENSOR_LABELS[] = {
   /*43*/"",             /*44*/"firmwareBuild",/*45*/"subVersion",/*46*/"",
   /*47*/"pelletHours",  /*48*/"",           /*49*/"pelletsTotal",/*50*/"serviceCountdown",
   /*51*/"serviceOffset",/*52*/"serviceMinutes",
+  // 53-54 confirmed 2026-09-18 by direct comparison against the stove's own
+  // Info > Paramètres screen (real hardware match, not binary-only inference).
+  /*53*/"ignitionCount",/*54*/"onOffCycles",
 };
-static const int NUM_SENSOR_LABELS = 53;
+static const int NUM_SENSOR_LABELS = 55;
 
 // nom émis pour une position (libellé prouvé, sinon "sNN"/"cNN")
 inline std::string ctrlName(int i) {

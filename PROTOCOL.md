@@ -255,8 +255,18 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 50 | **serviceCountdown** | Consumption remaining before service (kg) |
 | 51 | serviceOffset | Service interval offset |
 | 52 | serviceMinutes | Service time counter |
+| 53 | **ignitionCount** | Total ignition count — confirmed 2026-09-18 by direct comparison against the stove's own Info > Paramètres screen ("Nb d'allumages") |
+| 54 | **onOffCycles** | Total on/off cycle count — confirmed 2026-09-18 by direct comparison against the stove's own Info > Paramètres screen ("Cycles ON/OFF") |
 
 Indices not listed read `0` in standby and are not yet identified.
+
+Registering more than 53 names works too — tested live up to 88 (2026-09-18) with no
+"TOO MUCH ENTRIES" error, contradicting an earlier documented ~9-12 field ceiling for
+GET_SENSORS. Slots 53-87 beyond `onOffCycles` return real (non-zero) values in standby
+but are not yet identified. One coincidence noted but **not yet verified**: slot 82
+currently reads the same value as `serviceCountdown` (index 50) in every capture taken
+so far — needs to be watched across a real consumption change to confirm whether it
+tracks the same counter or is just a momentary match.
 
 ### Known Stove Models (`sensors[36]` / `model`)
 

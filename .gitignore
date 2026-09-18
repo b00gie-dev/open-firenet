@@ -11,3 +11,4 @@ open-firenet/build/
 minisign.key
 MESSAGE_CYRIL.md
 PR_DESCRIPTION.md
+/sensor_changes.log

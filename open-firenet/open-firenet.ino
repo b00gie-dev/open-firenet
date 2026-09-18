@@ -177,6 +177,7 @@ static const char* getStoveModelName(long modelId) {
   switch (modelId) {
     case 10: return "INTERNO";
     case 13: return "DOMO";
+    case 18: return "LIVO";
     case 23: return "DOMO BACK";
     default: return "RIKA";
   }

@@ -86,9 +86,9 @@ static const int N_CTRL = sizeof(CONTROLS)/sizeof(CONTROLS[0]);
 static std::vector<std::string> SENSOR_NAMES;
 static std::vector<std::string> CONTROL_NAMES;
 static void buildNames() {
-  // Déclarer 53 capteurs (indices 0 à 52) pour débloquer les compteurs de pellets (44),
-  // heures (47) et entretien (50).
-  for (int i = 0; i < 53; i++) SENSOR_NAMES.push_back(firenet::sensName(i));
+  // Registering more names has no benefit past 88: the stove's real internal
+  // array caps out at 88 slots (confirmed live 2026-09-18, see PROTOCOL.md).
+  for (int i = 0; i < 88; i++) SENSOR_NAMES.push_back(firenet::sensName(i));
   for (int i = 0; i < N_CTRL; i++) CONTROL_NAMES.push_back(CONTROLS[i].wire);
 }
 

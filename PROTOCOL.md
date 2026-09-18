@@ -288,10 +288,13 @@ requested but never come back with a value, with or without error. This matches 
 it is now a directly-tested fact, not an unsourced claim.
 
 Slots 53-87 beyond `onOffCycles` return real (non-zero) values in standby but are not
-yet identified. One coincidence noted but **not yet verified**: slot 82 currently
-reads the same value as `serviceCountdown` (index 50) in every capture taken so far —
-needs to be watched across a real consumption change to confirm whether it tracks the
-same counter or is just a momentary match.
+yet identified.
+
+**Resolved (2026-09-18)**: slot 82 matching `serviceCountdown` (index 50) was flagged
+earlier as an unverified coincidence. During a live burn, `serviceCountdown` dropped
+from `700` to `699` on real pellet consumption while **slot 82 stayed at `700`** —
+confirming they are two independent values that simply happened to match, not the
+same counter. Slot 82 remains unidentified.
 
 ### Known Stove Models (`sensors[36]` / `model`)
 

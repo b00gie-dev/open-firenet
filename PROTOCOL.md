@@ -248,8 +248,11 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 36 | model | Stove model ID (10 = INTERNO, 13 = DOMO, 18 = LIVO, 23 = DOMO BACK) |
 | 37 | language | UI language index |
 | 38 | appVerBoard | Main board firmware version (229 = V2.29) |
+| 40 | appVersion | Same value as `status.app_version` — confirmed 2026-09-18 by cross-referencing the independently-parsed `POST_CDCDEVICE_STATUS` heartbeat |
+| 43 | blVersion | Same value as `status.bl_version` — confirmed 2026-09-18 by cross-referencing the independently-parsed `POST_CDCDEVICE_STATUS` heartbeat |
 | 44 | firmwareBuild | Firmware build (58512 = 585.12) |
 | 45 | subVersion | Firmware sub-version |
+| 46 | appRevision | Same value as `status.app_revision` — confirmed 2026-09-18 by cross-referencing the independently-parsed `POST_CDCDEVICE_STATUS` heartbeat |
 | 47 | **pelletHours** | Total pellet operating time |
 | 49 | **pelletsTotal** | Total pellet consumption (kg) |
 | 50 | **serviceCountdown** | Consumption remaining before service (kg) |

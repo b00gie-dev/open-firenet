@@ -175,8 +175,8 @@ static const char* SENSOR_LABELS[] = {
   /*28*/"stageCur1",    /*29*/"stageTgt2",  /*30*/"stageCur",  /*31*/"mainState",
   /*32*/"subState",     /*33*/"rssi",       /*34*/"",          /*35*/"fabNumber",
   /*36*/"model",        /*37*/"language",   /*38*/"appVerBoard",
-  /*39*/"",             /*40*/"",           /*41*/"",          /*42*/"",
-  /*43*/"",             /*44*/"firmwareBuild",/*45*/"subVersion",/*46*/"",
+  /*39*/"",             /*40*/"appVersion", /*41*/"",          /*42*/"",
+  /*43*/"blVersion",    /*44*/"firmwareBuild",/*45*/"subVersion",/*46*/"appRevision",
   /*47*/"pelletHours",  /*48*/"",           /*49*/"pelletsTotal",/*50*/"serviceCountdown",
   /*51*/"serviceOffset",/*52*/"serviceMinutes",
   // 53-54 confirmed 2026-09-18 by direct comparison against the stove's own

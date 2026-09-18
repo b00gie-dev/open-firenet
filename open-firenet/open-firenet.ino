@@ -86,9 +86,9 @@ static const int N_CTRL = sizeof(CONTROLS)/sizeof(CONTROLS[0]);
 static std::vector<std::string> SENSOR_NAMES;
 static std::vector<std::string> CONTROL_NAMES;
 static void buildNames() {
-  // Déclarer 53 capteurs (indices 0 à 52) pour débloquer les compteurs de pellets (44),
-  // heures (47) et entretien (50).
-  for (int i = 0; i < 53; i++) SENSOR_NAMES.push_back(firenet::sensName(i));
+  // Registering more names has no benefit past 88: the stove's real internal
+  // array caps out at 88 slots (confirmed live 2026-09-18, see PROTOCOL.md).
+  for (int i = 0; i < 88; i++) SENSOR_NAMES.push_back(firenet::sensName(i));
   for (int i = 0; i < N_CTRL; i++) CONTROL_NAMES.push_back(CONTROLS[i].wire);
 }
 
@@ -552,12 +552,18 @@ static void handleScan() {
 }
 
 // ------------------------------------------------ API compatibilité open-firenet & Home Assistant
+static const size_t LOG_MAX_BYTES = 24576;  // 24 KB (well within stable free heap margin)
+static const size_t LOG_TRIM_BYTES = 6144;  // 6 KB trimmed on overflow
 static String g_recentLogs = "";
+
 static void logEntry(const char* dir, const std::string& msg) {
-  char b[256];
-  snprintf(b, sizeof b, "[%lu][%s] %s\n", (unsigned long)millis(), dir, msg.c_str());
-  if (g_recentLogs.length() > 8000) g_recentLogs = g_recentLogs.substring(2000);
-  g_recentLogs += b;
+  // Build the line with direct concatenation (no fixed-size buffer) so long frames
+  // (e.g. GET_SENSORS/POST_SENSORS with many fields) are never silently truncated.
+  String line = "[" + String((unsigned long)millis()) + "][" + dir + "] " + msg.c_str() + "\n";
+  if (g_recentLogs.length() > LOG_MAX_BYTES) {
+    g_recentLogs = g_recentLogs.substring(LOG_TRIM_BYTES);
+  }
+  g_recentLogs += line;
 }
 
 static void sendCors() {

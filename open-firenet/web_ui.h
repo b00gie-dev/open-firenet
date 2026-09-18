@@ -421,6 +421,13 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     </div>
   </div>
 
+  <div id="hopperLidBanner" style="display:none;background:rgba(245,158,11,0.15);border:1px solid var(--amber);border-radius:10px;padding:12px 16px;font-size:0.9rem;align-items:center;gap:12px">
+    <span style="font-size:1.5rem">⚠️</span>
+    <div>
+      <b id="hopperLidBannerTitle">Trappe du réservoir à pellets ouverte</b>
+    </div>
+  </div>
+
   <!-- Hero Card: Main Stove State -->
   <div class="hero-card">
     <div class="hero-state">
@@ -722,6 +729,7 @@ const I18N = {
     scanError: "Erreur lors du scan WiFi",
     apBannerTitle: "Mode Point d'Accès actif",
     apBannerDesc: "Sélectionnez votre réseau WiFi ci-dessous pour connecter Open-Firenet à votre box.",
+    hopperLidBannerTitle: "Trappe du réservoir à pellets ouverte",
     ssidPlaceholder: "Nom du réseau (SSID)",
     passPlaceholder: "Mot de passe",
     btnForgetWifi: "Oublier le WiFi",
@@ -773,13 +781,19 @@ const I18N = {
       augerSet: "Consigne vis d'alimentation (RPM)",
       model: "Modèle poêle",
       appVerBoard: "Version firmware carte mère",
+      appVersion: "Version application dongle",
+      blVersion: "Version bootloader dongle",
+      appRevision: "Révision application dongle",
       firmwareBuild: "Sous-version build",
       language: "Langue configurée (3 = FR)",
       rssi: "Signal radio WiFi (dBm)",
       errMask32: "Masque erreurs 32 bits",
       errSub: "Code sous-erreur active",
       serviceOffset: "Décalage compteur révision",
-      serviceMinutes: "Minutes totales écoulées révision"
+      serviceMinutes: "Minutes totales écoulées révision",
+      ignitionCount: "Nombre d'allumages",
+      onOffCycles: "Cycles marche/arrêt",
+      hopperLidClosed: "Trappe réservoir pellets fermée"
     }
   },
   en: {
@@ -845,6 +859,7 @@ const I18N = {
     scanError: "Error scanning WiFi",
     apBannerTitle: "Access Point mode active",
     apBannerDesc: "Select your WiFi network below to connect Open-Firenet to your router.",
+    hopperLidBannerTitle: "Pellet hopper lid open",
     ssidPlaceholder: "Network Name (SSID)",
     passPlaceholder: "Password",
     btnForgetWifi: "Forget WiFi",
@@ -896,13 +911,19 @@ const I18N = {
       augerSet: "Pellet feed auger setpoint (RPM)",
       model: "Stove model",
       appVerBoard: "Mainboard firmware version",
+      appVersion: "Dongle app version",
+      blVersion: "Dongle bootloader version",
+      appRevision: "Dongle app revision",
       firmwareBuild: "Build sub-version",
       language: "Configured language (3 = FR)",
       rssi: "WiFi signal strength (dBm)",
       errMask32: "Active error bitmask (32 bits)",
       errSub: "Active error subcode",
       serviceOffset: "Service counter offset",
-      serviceMinutes: "Total elapsed service minutes"
+      serviceMinutes: "Total elapsed service minutes",
+      ignitionCount: "Total ignition count",
+      onOffCycles: "Total on/off cycles",
+      hopperLidClosed: "Pellet hopper lid closed"
     }
   },
   de: {
@@ -968,6 +989,7 @@ const I18N = {
     scanError: "Fehler beim WLAN-Scan",
     apBannerTitle: "Access Point Modus aktiv",
     apBannerDesc: "Wählen Sie unten Ihr WLAN aus, um Open-Firenet mit Ihrem Router zu verbinden.",
+    hopperLidBannerTitle: "Pelletbehälter-Deckel offen",
     ssidPlaceholder: "Netzwerkname (SSID)",
     passPlaceholder: "Passwort",
     btnForgetWifi: "WLAN vergessen",
@@ -1019,13 +1041,19 @@ const I18N = {
       augerSet: "Pelletförderschnecke Sollwert (RPM)",
       model: "Ofenmodell",
       appVerBoard: "Firmware-Version Hauptplatine",
+      appVersion: "Dongle App-Version",
+      blVersion: "Dongle Bootloader-Version",
+      appRevision: "Dongle App-Revision",
       firmwareBuild: "Build-Unterversion",
       language: "Konfigurierte Sprache (3 = FR)",
       rssi: "WLAN-Signalstärke (dBm)",
       errMask32: "Aktive Fehlerbitmaske (32 Bit)",
       errSub: "Aktiver Fehler-Untercode",
       serviceOffset: "Wartungszähler-Offset",
-      serviceMinutes: "Gesamte vergangene Wartungsminuten"
+      serviceMinutes: "Gesamte vergangene Wartungsminuten",
+      ignitionCount: "Anzahl Zündungen gesamt",
+      onOffCycles: "Anzahl Ein/Aus-Zyklen gesamt",
+      hopperLidClosed: "Pelletbehälter-Deckel geschlossen"
     }
   }
 };
@@ -1078,6 +1106,7 @@ function applyLang() {
   if (document.getElementById('btnScan')) document.getElementById('btnScan').textContent = t.btnScan;
   if (document.getElementById('apBannerTitle')) document.getElementById('apBannerTitle').textContent = t.apBannerTitle;
   if (document.getElementById('apBannerDesc')) document.getElementById('apBannerDesc').textContent = t.apBannerDesc;
+  if (document.getElementById('hopperLidBannerTitle')) document.getElementById('hopperLidBannerTitle').textContent = t.hopperLidBannerTitle;
   document.getElementById('newSsid').placeholder = t.ssidPlaceholder;
   document.getElementById('newPass').placeholder = t.passPlaceholder;
   document.getElementById('btnForgetWifi').textContent = t.btnForgetWifi;
@@ -1367,6 +1396,10 @@ async function tick() {
     const sens = s.sensors || {};
     const ctrl = s.controls || {};
     const rawS = s.raw_sensors || {};
+
+    if (rawS.hopperLidClosed !== undefined) {
+      document.getElementById('hopperLidBanner').style.display = (rawS.hopperLidClosed === 0) ? 'flex' : 'none';
+    }
 
     const mainSt = stObj.state_code !== undefined ? stObj.state_code : (rawS.mainState !== undefined ? rawS.mainState : (s.sensors_pos ? s.sensors_pos[31] : 1));
     const stInfo = (t.stateMap && t.stateMap[mainSt]) || { title: stObj.state_label || ("State " + mainSt), desc: stObj.state || "Unknown", icon: "❓", active: stObj.is_burning || false };

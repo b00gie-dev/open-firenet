@@ -232,19 +232,19 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | Index | Name | Description |
 |---|---|---|
 | 0 | roomTemp | Room temperature ×10 (246 = 24.6 °C) |
-| 1 | flame | Flame / flue temperature (°C) |
+| 1 | flame | Flame / flue temperature (°C) — observed 18→580 range across a full live burn cycle (2026-09-18), settling ~560-580 at full regulation |
 | 3 | errMask32 | Active error bitmask |
 | 4 | errSub | Error sub-code |
 | 5 | stateMask | Blocking-state bitmask — bit value `2` confirmed 2026-09-18 by direct action: opening the pellet hopper lid sets it to `2`, closing it returns it to `0` |
-| 7 | augerSet | Pellet auger setpoint |
-| 9 | idFanMeas | Induced-draft fan, measured (RPM) |
+| 7 | augerSet | Pellet auger setpoint (RPM) — observed 2026-09-18 cycling on/off (~360-620) during active regulation, drops hard to `0` the instant the stove enters Burn Off |
+| 9 | idFanMeas | Induced-draft fan, measured (RPM) — observed 2026-09-18: ~1500 RPM at steady regulation, briefly spikes to ~2585 at the Heating→Burn Off transition (purge), then settles back down over a few minutes |
 | 10 | idFanSet | Induced-draft fan, setpoint (RPM) |
 | 23 | **hopperLidClosed** | Pellet hopper lid state (`1`=closed, `0`=open) — confirmed 2026-09-18 by direct action, same event as `stateMask` bit `2` above |
 | 27 | boardSensor | Board temperature sensor |
 
 > **Correction (2026-09-18)**: an earlier hypothesis (from a separate, older research corpus at `~/dev/rika/PROTOCOL.md`, sourced from `WifiUpdateCustomer_V2.0.0.15.exe`'s PRIO1 string-table order) speculated that positions 19-25 in *that* numbering corresponded to MultiAir fan controls (`bConvectionFanActive`, `sConvectionFanLevel`, `sConvectionFan2Level`, etc.). The live confirmation above that **our own index 23 is `hopperLidClosed`**, not a MultiAir field, directly contradicts that hypothesis for this index — and was confirmed with MultiAir switched **off** on the stove during a live burn cycle, while our index 23 still toggled with the hopper lid alone. This means our bridge's `sNN` positional numbering (order of names registered via `GET_SENSORS`) is **not the same index space** as that older PRIO1 field-order theory; the two should not be assumed to line up position-for-position without independent confirmation for each index.
 | 28–30 | stageCur1 / stageTgt2 / stageCur | Current / target heating stage — **indirect MultiAir effect observed 2026-09-18**: activating MultiAir 1 during an active burn immediately jumped `stageTgt2` 70→90% while `stageCur`/`stageCur1` briefly lagged at 51%, and `augerSet` restarted (0→367 RPM). No direct MultiAir on/off flag has been found on the wire, but this looks like the stove's power regulation compensating for the extra heat MultiAir draws away — an indirect signature, not a direct read of the setting. |
-| 31 | mainState | Machine state (0 Standby, 1 Ignition, 2 Start, 3 Regulation, 4 Cleaning, 5 Burnoff) |
+| 31 | mainState | Machine state — corrected 2026-09-18, matches `open-firenet.ino`'s own switch and a live burn cycle: `0`=Off, `1`=Standby, `2`=Ignition, `3`=Flame Start, `4`=Heating, `5`=Grate Cleaning, `6`=Burn Off, `7`=Split Log (previous table here, "0 Standby...5 Burnoff", was wrong) |
 | 32 | subState | Sub-state |
 | 33 | rssi | WiFi RSSI reported back |
 | 35 | fabNumber | Fabrication number |
@@ -265,6 +265,11 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 54 | **onOffCycles** | Total on/off cycle count — confirmed 2026-09-18 by direct comparison against the stove's own Info > Paramètres screen ("Cycles ON/OFF") |
 
 Indices not listed read `0` in standby and are not yet identified.
+
+**Slot 8** is a partial exception: still unidentified, but observed 2026-09-18 to hold `0`
+in standby and swing through varying non-zero values (roughly 20-112) throughout an
+active burn — likely a combustion-related reading (air/flow/motor-adjacent), not a
+simple flag. Exact meaning not determined.
 
 **Unconfirmed lead — slot 39**: reads the exact same value as `appVerBoard` (index 38,
 `229`) in every capture taken so far (2026-09-18). Not an artefact of the bridge —

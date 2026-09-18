@@ -245,7 +245,7 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 32 | subState | Sub-state |
 | 33 | rssi | WiFi RSSI reported back |
 | 35 | fabNumber | Fabrication number |
-| 36 | model | Stove model ID (10 = INTERNO, 13 = DOMO, 18 = LIVO, 23 = DOMO BACK) |
+| 36 | model | Stove model ID (see [Known Stove Models](#known-stove-models-sensors36--model) below) |
 | 37 | language | UI language index |
 | 38 | appVerBoard | Main board firmware version (229 = V2.29) |
 | 44 | firmwareBuild | Firmware build (58512 = 585.12) |

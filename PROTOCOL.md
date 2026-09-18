@@ -273,13 +273,22 @@ elsewhere in this repo's OTA state-string findings) — the two would only diver
 a real firmware update, which we have no way to trigger from our side to test this.
 Left unnamed (`s39`) pending that opportunity.
 
-Registering more than 53 names works too — tested live up to 88 (2026-09-18) with no
-"TOO MUCH ENTRIES" error, contradicting an earlier documented ~9-12 field ceiling for
-GET_SENSORS. Slots 53-87 beyond `onOffCycles` return real (non-zero) values in standby
-but are not yet identified. One coincidence noted but **not yet verified**: slot 82
-currently reads the same value as `serviceCountdown` (index 50) in every capture taken
-so far — needs to be watched across a real consumption change to confirm whether it
-tracks the same counter or is just a momentary match.
+Registering more names than the ~9-12 previously documented as a GET_SENSORS ceiling
+works fine — no "TOO MUCH ENTRIES" error, tested live up to 150 names requested
+(2026-09-18). **The request side has no practical limit found so far.**
+
+**The stove's real ceiling is on the response side, and it is exactly 88 slots
+(indices 0-87)** — confirmed empirically (2026-09-18): registering 150 names still
+only ever gets a `POST_SENSORS` response populated up to `s87`; indices 88-149 are
+requested but never come back with a value, with or without error. This matches the
+"~88 slots" figure that appeared in this doc pre-2026-09-18 without any citation —
+it is now a directly-tested fact, not an unsourced claim.
+
+Slots 53-87 beyond `onOffCycles` return real (non-zero) values in standby but are not
+yet identified. One coincidence noted but **not yet verified**: slot 82 currently
+reads the same value as `serviceCountdown` (index 50) in every capture taken so far —
+needs to be watched across a real consumption change to confirm whether it tracks the
+same counter or is just a momentary match.
 
 ### Known Stove Models (`sensors[36]` / `model`)
 

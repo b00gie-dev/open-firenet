@@ -245,7 +245,7 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 32 | subState | Sub-state |
 | 33 | rssi | WiFi RSSI reported back |
 | 35 | fabNumber | Fabrication number |
-| 36 | model | Stove model ID (10 = INTERNO, 13 = DOMO, 18 = LIVO, 23 = DOMO BACK) |
+| 36 | model | Stove model ID (see [Known Stove Models](#known-stove-models-sensors36--model) below) |
 | 37 | language | UI language index |
 | 38 | appVerBoard | Main board firmware version (229 = V2.29) |
 | 44 | firmwareBuild | Firmware build (58512 = 585.12) |
@@ -260,16 +260,52 @@ Indices not listed read `0` in standby and are not yet identified.
 
 ### Known Stove Models (`sensors[36]` / `model`)
 
-The stove reports its hardware model identifier in sensor index 36. This ID matches the 3-digit code in official Rika firmware binaries (`RIKA_<type>_<modelId>_<boardVer>_<Description>_<ModelName>_V<Version>.bin`) and the byte stored at header offset `0x0006` in test firmware:
+The stove reports its hardware model identifier in sensor index 36. This ID matches the 3-digit code in official Rika firmware binaries (`RIKA_<type>_<modelId>_<boardVer>_<Description>_<ModelName>_V<Version>.bin`) and the byte stored at header offset `0x0006` in test firmware. The table below was built by downloading every official firmware package from Rika's update servers and reading the model ID/code straight out of each binary's filename and header — not guessed or inferred from the wire protocol.
 
 | Model ID | Hex | Firmware Code | Commercial Model | Type |
 |:---:|:---:|:---:|:---|:---|
+| **`1`** | `0x01` | `001` / `INDUO` | **RIKA INDUO** | Combined pellet and firewood stove (*Kombiofen*) |
+| **`2`** | `0x02` | `002` / `TOPO` | **RIKA TOPO** | Pellet stove (*Pelletofen*) |
+| **`3`** | `0x03` | `003` / `ROCO` | **RIKA ROCO** | Pellet stove with sliding glass door |
+| **`4`** | `0x04` | `004` / `RCMA` | **RIKA ROCO MULTIAIR** | Pellet stove with MultiAir ducting |
+| **`5`** | `0x05` | `005` / `RCAO` | **RIKA ROCO RAO** | Pellet stove with top flue connection (*RAO*) |
+| **`6`** | `0x06` | `006` / `KAPO` | **RIKA KAPO** | Compact pellet stove |
+| **`7`** | `0x07` | `007` / `MIRO` | **RIKA MIRO** | Pellet stove (4 kW / 6 kW) |
+| **`8`** | `0x08` | `008` / `COMO` | **RIKA COMO** | Pellet stove (1st generation) |
+| **`9`** | `0x09` | `009` / `REVO` | **RIKA REVO** | Pellet stove with natural stone |
 | **`10`** | `0x0A` | `010` / `ITRO` | **RIKA INTERNO** | Pellet fireplace insert (*Kamineinsatz*) |
+| **`11`** | `0x0B` | `011` / `FILO` | **RIKA FILO** | Customizable pellet stove |
+| **`12`** | `0x0C` | `012` / `SUMO` | **RIKA SUMO** | Pellet stove with large hopper capacity |
 | **`13`** | `0x0D` | `013` / `DOMO` | **RIKA DOMO** | Pellet stove (natural convection + MultiAir) |
-| **`18`** | `0x12` | `018` / `LIVO` | **RIKA LIVO** | Pellet stove (natural convection) |
+| **`14`** | `0x0E` | `014` / `CORSO` | **RIKA CORSO** | Cylindrical round pellet stove |
+| **`15`** | `0x0F` | `015` / `IND_2` | **RIKA INDUO II** | Combined pellet & firewood stove, 2nd gen |
+| **`16`** | `0x10` | `016` / `REVIVO` | **RIKA REVIVO** | Pellet fireplace insert (*Kamineinsatz*) |
+| **`17`** | `0x11` | `017` / `PARO` | **RIKA PARO** | Combined pellet and firewood stove (*Kombiofen*) |
+| **`18`** | `0x12` | `018` / `LIVO` | **RIKA LIVO** | Pellet stove with wide panoramic view |
+| **`19`** | `0x13` | `019` / `CMO_2` | **RIKA COMO II** | Pellet stove, 2nd generation |
+| **`20`** | `0x14` | `020` / `RVO_2` | **RIKA REVO II** | Pellet stove, 2nd generation |
+| **`21`** | `0x15` | `021` / `COSMO` | **RIKA COSMO** | Pellet stove |
+| **`22`** | `0x16` | `022` / `SONO` | **RIKA SONO** | Compact pellet stove with large autonomy |
 | **`23`** | `0x17` | `023` / `DOBA` | **RIKA DOMO BACK** | Pellet stove with integrated baking oven (*Backofen*) |
+| **`24`** | `0x18` | `024` / `PKE` | **RIKA PK E** | Central heating pellet boiler (*Pelletkessel*) |
+| **`25`** | `0x19` | `025` / `SUMA` | **RIKA SUMO MULTIAIR** | Pellet stove with MultiAir |
+| **`26`** | `0x1A` | `026` / `CNECT` | **RIKA CONNECT** | Modular pellet stove (*CONNECT Pellet*) |
 
-*Note: Other Rika models (e.g. INDUO hybrid pellet/wood, COMO, PARO, LIVO) use distinct IDs and may use different firmware architectures or communication variants.*
+#### Sibling Brand: ANIMO Models (Brand ID `0x02`)
+
+RIKA manufactures stoves under the sister brand **ANIMO** (byte 5 = `0x02` in firmware test headers):
+
+| Model ID | Code | Model Name | Type |
+|:---:|:---:|:---|:---|
+| **`1`** | `001` / `AVITO` | **ANIMO AVITO** | Pellet stove |
+| **`2`** | `002` / `AVSLM` | **ANIMO AVITO SLIM** | Compact slim pellet stove |
+| **`3`** | `003` / `AVRAO` | **ANIMO AVITO RAO** | Pellet stove with top flue |
+| **`4`** | `004` / `ADEVO` | **ANIMO ADEVO** | Pellet stove |
+| **`5`** | `005` / `PURE` | **ANIMO PURE** | Pellet stove |
+| **`6`** | `006` / `ADUO` | **ANIMO ADUO** | Combined pellet/wood stove |
+| **`7`** | `007` / `AMITO` | **ANIMO AMITO** | Pellet stove |
+| **`8`** | `008` / `ARND` | **ANIMO ARONDO** | Round pellet stove |
+| **`9`** | `009` / `ADUO_2` | **ANIMO ADUO 2** | Combined pellet/wood stove, 2nd gen |
 
 ---
 

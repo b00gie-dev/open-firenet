@@ -241,6 +241,8 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 10 | idFanSet | Induced-draft fan, setpoint (RPM) |
 | 23 | **hopperLidClosed** | Pellet hopper lid state (`1`=closed, `0`=open) — confirmed 2026-09-18 by direct action, same event as `stateMask` bit `2` above |
 | 27 | boardSensor | Board temperature sensor |
+
+> **Correction (2026-09-18)**: an earlier hypothesis (from a separate, older research corpus at `~/dev/rika/PROTOCOL.md`, sourced from `WifiUpdateCustomer_V2.0.0.15.exe`'s PRIO1 string-table order) speculated that positions 19-25 in *that* numbering corresponded to MultiAir fan controls (`bConvectionFanActive`, `sConvectionFanLevel`, `sConvectionFan2Level`, etc.). The live confirmation above that **our own index 23 is `hopperLidClosed`**, not a MultiAir field, directly contradicts that hypothesis for this index — and was confirmed with MultiAir switched **off** on the stove during a live burn cycle, while our index 23 still toggled with the hopper lid alone. This means our bridge's `sNN` positional numbering (order of names registered via `GET_SENSORS`) is **not the same index space** as that older PRIO1 field-order theory; the two should not be assumed to line up position-for-position without independent confirmation for each index.
 | 28–30 | stageCur1 / stageTgt2 / stageCur | Current / target heating stage |
 | 31 | mainState | Machine state (0 Standby, 1 Ignition, 2 Start, 3 Regulation, 4 Cleaning, 5 Burnoff) |
 | 32 | subState | Sub-state |

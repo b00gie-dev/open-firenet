@@ -421,6 +421,13 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     </div>
   </div>
 
+  <div id="hopperLidBanner" style="display:none;background:rgba(245,158,11,0.15);border:1px solid var(--amber);border-radius:10px;padding:12px 16px;font-size:0.9rem;align-items:center;gap:12px">
+    <span style="font-size:1.5rem">⚠️</span>
+    <div>
+      <b id="hopperLidBannerTitle">Trappe du réservoir à pellets ouverte</b>
+    </div>
+  </div>
+
   <!-- Hero Card: Main Stove State -->
   <div class="hero-card">
     <div class="hero-state">
@@ -722,6 +729,7 @@ const I18N = {
     scanError: "Erreur lors du scan WiFi",
     apBannerTitle: "Mode Point d'Accès actif",
     apBannerDesc: "Sélectionnez votre réseau WiFi ci-dessous pour connecter Open-Firenet à votre box.",
+    hopperLidBannerTitle: "Trappe du réservoir à pellets ouverte",
     ssidPlaceholder: "Nom du réseau (SSID)",
     passPlaceholder: "Mot de passe",
     btnForgetWifi: "Oublier le WiFi",
@@ -851,6 +859,7 @@ const I18N = {
     scanError: "Error scanning WiFi",
     apBannerTitle: "Access Point mode active",
     apBannerDesc: "Select your WiFi network below to connect Open-Firenet to your router.",
+    hopperLidBannerTitle: "Pellet hopper lid open",
     ssidPlaceholder: "Network Name (SSID)",
     passPlaceholder: "Password",
     btnForgetWifi: "Forget WiFi",
@@ -980,6 +989,7 @@ const I18N = {
     scanError: "Fehler beim WLAN-Scan",
     apBannerTitle: "Access Point Modus aktiv",
     apBannerDesc: "Wählen Sie unten Ihr WLAN aus, um Open-Firenet mit Ihrem Router zu verbinden.",
+    hopperLidBannerTitle: "Pelletbehälter-Deckel offen",
     ssidPlaceholder: "Netzwerkname (SSID)",
     passPlaceholder: "Passwort",
     btnForgetWifi: "WLAN vergessen",
@@ -1096,6 +1106,7 @@ function applyLang() {
   if (document.getElementById('btnScan')) document.getElementById('btnScan').textContent = t.btnScan;
   if (document.getElementById('apBannerTitle')) document.getElementById('apBannerTitle').textContent = t.apBannerTitle;
   if (document.getElementById('apBannerDesc')) document.getElementById('apBannerDesc').textContent = t.apBannerDesc;
+  if (document.getElementById('hopperLidBannerTitle')) document.getElementById('hopperLidBannerTitle').textContent = t.hopperLidBannerTitle;
   document.getElementById('newSsid').placeholder = t.ssidPlaceholder;
   document.getElementById('newPass').placeholder = t.passPlaceholder;
   document.getElementById('btnForgetWifi').textContent = t.btnForgetWifi;
@@ -1379,6 +1390,10 @@ async function tick() {
     const sens = s.sensors || {};
     const ctrl = s.controls || {};
     const rawS = s.raw_sensors || {};
+
+    if (rawS.hopperLidClosed !== undefined) {
+      document.getElementById('hopperLidBanner').style.display = (rawS.hopperLidClosed === 0) ? 'flex' : 'none';
+    }
 
     const mainSt = stObj.state_code !== undefined ? stObj.state_code : (rawS.mainState !== undefined ? rawS.mainState : (s.sensors_pos ? s.sensors_pos[31] : 1));
     const stInfo = (t.stateMap && t.stateMap[mainSt]) || { title: stObj.state_label || ("State " + mainSt), desc: stObj.state || "Unknown", icon: "❓", active: stObj.is_burning || false };

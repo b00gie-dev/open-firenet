@@ -532,10 +532,11 @@ static void handleScan() {
 // ------------------------------------------------ API compatibilité open-firenet & Home Assistant
 static String g_recentLogs = "";
 static void logEntry(const char* dir, const std::string& msg) {
-  char b[256];
-  snprintf(b, sizeof b, "[%lu][%s] %s\n", (unsigned long)millis(), dir, msg.c_str());
+  // Build the line with direct concatenation (no fixed-size buffer) so long frames
+  // (e.g. GET_SENSORS/POST_SENSORS with many fields) are never silently truncated.
+  String line = "[" + String((unsigned long)millis()) + "][" + dir + "] " + msg.c_str() + "\n";
   if (g_recentLogs.length() > 8000) g_recentLogs = g_recentLogs.substring(2000);
-  g_recentLogs += b;
+  g_recentLogs += line;
 }
 
 static void sendCors() {

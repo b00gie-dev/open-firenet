@@ -263,6 +263,16 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 
 Indices not listed read `0` in standby and are not yet identified.
 
+**Unconfirmed lead — slot 39**: reads the exact same value as `appVerBoard` (index 38,
+`229`) in every capture taken so far (2026-09-18). Not an artefact of the bridge —
+`parseBody()` fills `raw_sensors` straight from what the stove sends positionally in
+`POST_SENSORS`, so the stove genuinely emits `229` twice. Hypothesis, **not confirmed**:
+this could be an "expected" vs. "actual" board-version pair used by the official OTA
+validation logic (`WIFI Version OK` / `WIFI Version INVALID` states, already documented
+elsewhere in this repo's OTA state-string findings) — the two would only diverge during
+a real firmware update, which we have no way to trigger from our side to test this.
+Left unnamed (`s39`) pending that opportunity.
+
 Registering more than 53 names works too — tested live up to 88 (2026-09-18) with no
 "TOO MUCH ENTRIES" error, contradicting an earlier documented ~9-12 field ceiling for
 GET_SENSORS. Slots 53-87 beyond `onOffCycles` return real (non-zero) values in standby

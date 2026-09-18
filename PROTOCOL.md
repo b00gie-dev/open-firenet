@@ -235,10 +235,11 @@ firmware versions are confirmed; unlabelled slots read `0` in standby.
 | 1 | flame | Flame / flue temperature (°C) |
 | 3 | errMask32 | Active error bitmask |
 | 4 | errSub | Error sub-code |
-| 5 | stateMask | Blocking-state bitmask |
+| 5 | stateMask | Blocking-state bitmask — bit value `2` confirmed 2026-09-18 by direct action: opening the pellet hopper lid sets it to `2`, closing it returns it to `0` |
 | 7 | augerSet | Pellet auger setpoint |
 | 9 | idFanMeas | Induced-draft fan, measured (RPM) |
 | 10 | idFanSet | Induced-draft fan, setpoint (RPM) |
+| 23 | **hopperLidClosed** | Pellet hopper lid state (`1`=closed, `0`=open) — confirmed 2026-09-18 by direct action, same event as `stateMask` bit `2` above |
 | 27 | boardSensor | Board temperature sensor |
 | 28–30 | stageCur1 / stageTgt2 / stageCur | Current / target heating stage |
 | 31 | mainState | Machine state (0 Standby, 1 Ignition, 2 Start, 3 Regulation, 4 Cleaning, 5 Burnoff) |

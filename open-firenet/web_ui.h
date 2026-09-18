@@ -784,7 +784,8 @@ const I18N = {
       serviceOffset: "Décalage compteur révision",
       serviceMinutes: "Minutes totales écoulées révision",
       ignitionCount: "Nombre d'allumages",
-      onOffCycles: "Cycles marche/arrêt"
+      onOffCycles: "Cycles marche/arrêt",
+      hopperLidClosed: "Trappe réservoir pellets fermée"
     }
   },
   en: {
@@ -912,7 +913,8 @@ const I18N = {
       serviceOffset: "Service counter offset",
       serviceMinutes: "Total elapsed service minutes",
       ignitionCount: "Total ignition count",
-      onOffCycles: "Total on/off cycles"
+      onOffCycles: "Total on/off cycles",
+      hopperLidClosed: "Pellet hopper lid closed"
     }
   },
   de: {
@@ -1040,7 +1042,8 @@ const I18N = {
       serviceOffset: "Wartungszähler-Offset",
       serviceMinutes: "Gesamte vergangene Wartungsminuten",
       ignitionCount: "Anzahl Zündungen gesamt",
-      onOffCycles: "Anzahl Ein/Aus-Zyklen gesamt"
+      onOffCycles: "Anzahl Ein/Aus-Zyklen gesamt",
+      hopperLidClosed: "Pelletbehälter-Deckel geschlossen"
     }
   }
 };

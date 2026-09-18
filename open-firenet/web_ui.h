@@ -779,7 +779,9 @@ const I18N = {
       errMask32: "Masque erreurs 32 bits",
       errSub: "Code sous-erreur active",
       serviceOffset: "Décalage compteur révision",
-      serviceMinutes: "Minutes totales écoulées révision"
+      serviceMinutes: "Minutes totales écoulées révision",
+      ignitionCount: "Nombre d'allumages",
+      onOffCycles: "Cycles marche/arrêt"
     }
   },
   en: {
@@ -902,7 +904,9 @@ const I18N = {
       errMask32: "Active error bitmask (32 bits)",
       errSub: "Active error subcode",
       serviceOffset: "Service counter offset",
-      serviceMinutes: "Total elapsed service minutes"
+      serviceMinutes: "Total elapsed service minutes",
+      ignitionCount: "Total ignition count",
+      onOffCycles: "Total on/off cycles"
     }
   },
   de: {
@@ -1025,7 +1029,9 @@ const I18N = {
       errMask32: "Aktive Fehlerbitmaske (32 Bit)",
       errSub: "Aktiver Fehler-Untercode",
       serviceOffset: "Wartungszähler-Offset",
-      serviceMinutes: "Gesamte vergangene Wartungsminuten"
+      serviceMinutes: "Gesamte vergangene Wartungsminuten",
+      ignitionCount: "Anzahl Zündungen gesamt",
+      onOffCycles: "Anzahl Ein/Aus-Zyklen gesamt"
     }
   }
 };

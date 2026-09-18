@@ -7,7 +7,8 @@
 # 2. Vérification de la branche (main) et synchronisation remote
 # 3. Exécution obligatoire des tests unitaires
 # 4. Calcul automatique SemVer (patch / minor / major)
-# 5. Création et push du tag annoté pour déclencher la CI Release
+# 5. Mise à jour et commit de OPENFIRENET_VERSION dans le firmware
+# 6. Création et push du tag annoté pour déclencher la CI Release
 # ==============================================================================
 
 set -eo pipefail
@@ -122,6 +123,10 @@ case "$TARGET_TYPE" in
     ;;
 esac
 
+if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+  fatal "Le tag $NEW_TAG existe déjà dans le dépôt."
+fi
+
 # 6. Affichage des commits depuis le dernier tag
 echo ""
 echo -e "${BOLD}Historique depuis ${LATEST_TAG} :${NC}"
@@ -141,14 +146,33 @@ if [[ ! "$CONFIRM" =~ ^[oOyY]$ ]]; then
   exit 0
 fi
 
-# 8. Création du tag annoté
+# 8. Mise à jour automatique de la version dans le firmware
+CLEAN_VER="${NEW_TAG#v}"
+info "Mise à jour de OPENFIRENET_VERSION vers ${CLEAN_VER}..."
+sed -i -E "s/(#define OPENFIRENET_VERSION )\"[^\"]+\"/\1\"$CLEAN_VER\"/" open-firenet/open-firenet.ino
+if ! grep -q "#define OPENFIRENET_VERSION \"$CLEAN_VER\"" open-firenet/open-firenet.ino; then
+  fatal "Échec de la mise à jour de OPENFIRENET_VERSION dans open-firenet.ino !"
+fi
+ok "OPENFIRENET_VERSION synchronisé (${CLEAN_VER})."
+
+info "Commit automatique de la version ${NEW_TAG}..."
+git add open-firenet/open-firenet.ino
+if ! git diff --cached --quiet; then
+  git commit -m "chore(release): bump firmware version to ${NEW_TAG}"
+  info "Push du commit sur origin/${CURRENT_BRANCH}..."
+  git push origin "$CURRENT_BRANCH"
+  ok "Commit de version poussé sur origin."
+else
+  ok "OPENFIRENET_VERSION déjà à jour, aucun commit nécessaire."
+fi
+
+# 9. Création du tag annoté
 info "Création du tag Git ${NEW_TAG}..."
 git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
 ok "Tag local $NEW_TAG créé."
 
-# 9. Push vers le dépôt distant
-info "Push vers origin (${CURRENT_BRANCH} et tag ${NEW_TAG})..."
-git push origin "$CURRENT_BRANCH"
+# 10. Push du tag vers le dépôt distant
+info "Push du tag sur origin..."
 git push origin "$NEW_TAG"
 
 echo ""

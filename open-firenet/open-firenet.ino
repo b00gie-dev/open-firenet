@@ -40,7 +40,7 @@ USBCDC USBSerial;
 
 // USBSerial = CDC TinyUSB (lien poêle) ; DBG = UART0 (port COM/CH343, logs).
 #define DBG Serial
-#define POELE USBSerial
+#define STOVE USBSerial
 
 // --------------------------------------------------------------- WiFi / état
 Preferences prefs;
@@ -465,7 +465,7 @@ static void handleForget() {
   delay(300); ESP.restart();
 }
 
-// Option C — provisioning par commande série (UART0 DBG et CDC TinyUSB POELE) :
+// Option C — provisioning par commande série (UART0 DBG et CDC TinyUSB STOVE) :
 //   SETWIFI:<ssid>:<password>
 // Le SSID s'arrête au premier ':' ; tout le reste est le mot de passe (donc un
 // mot de passe contenant ':' est accepté). Enregistre en NVS puis redémarre en STA.
@@ -512,23 +512,23 @@ static void handleSerialProvisioning() {
     }
   }
 
-  static String poeleLine;
-  while (POELE.available()) {
-    uint8_t b = (uint8_t)POELE.read();
+  static String stoveLine;
+  while (STOVE.available()) {
+    uint8_t b = (uint8_t)STOVE.read();
     if (g_link) g_link->onByte(b);
     char c = (char)b;
     if (c == '\n' || c == '\r') {
-      if (poeleLine.length() > 0) {
-        applySetWifi(poeleLine, POELE);
-        poeleLine = "";
+      if (stoveLine.length() > 0) {
+        applySetWifi(stoveLine, STOVE);
+        stoveLine = "";
       }
     } else {
-      if (poeleLine.length() == 0) {
-        if (c == 'S') poeleLine += c;
-      } else if (poeleLine.length() < 160) {
-        poeleLine += c;
-        if (poeleLine.length() == 8 && poeleLine != "SETWIFI:") {
-          poeleLine = "";
+      if (stoveLine.length() == 0) {
+        if (c == 'S') stoveLine += c;
+      } else if (stoveLine.length() < 160) {
+        stoveLine += c;
+        if (stoveLine.length() == 8 && stoveLine != "SETWIFI:") {
+          stoveLine = "";
         }
       }
     }
@@ -926,7 +926,7 @@ void setup() {
   USB.manufacturerName("Open-Firenet");
   USB.productName("Open-Firenet 2");
   USB.serialNumber("23176212");
-  POELE.begin();                   // CDC TinyUSB vers le poêle
+  STOVE.begin();                   // CDC TinyUSB vers le poêle
   USB.begin();
 
   g_link = new firenet::DongleLink(txToStove, nowMs);
@@ -1054,7 +1054,7 @@ void loop() {
     dnsServer.processNextRequest();
   }
 
-  // 0b) provisioning série (Option C) : commande SETWIFI:<ssid>:<pass> sur UART0 (DBG) et CDC TinyUSB (POELE)
+  // 0b) provisioning série (Option C) : commande SETWIFI:<ssid>:<pass> sur UART0 (DBG) et CDC TinyUSB (STOVE)
   handleSerialProvisioning();
 
   // 1) traiter les trames du poêle
@@ -1126,7 +1126,7 @@ void loop() {
                (unsigned)m.controls.size(),
                WiFi.status()==WL_CONNECTED ? WiFi.RSSI() : 0);
     DBG.printf("[hb] dropped=%u cdc_connected=%d txfree=%d grCount=%u\n",
-               (unsigned)g_link->dropped(), (bool)POELE, POELE.availableForWrite(),
+               (unsigned)g_link->dropped(), (bool)STOVE, STOVE.availableForWrite(),
                (unsigned)g_grCount);
     DBG.printf("[wifi] status=%d ip=%s rssi=%d ssid=%s\n",
                (int)WiFi.status(), WiFi.localIP().toString().c_str(),

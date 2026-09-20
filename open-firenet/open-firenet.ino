@@ -465,34 +465,72 @@ static void handleForget() {
   delay(300); ESP.restart();
 }
 
-// Option C — provisioning par commande série (UART0, 115200) :
+// Option C — provisioning par commande série (UART0 DBG et CDC TinyUSB POELE) :
 //   SETWIFI:<ssid>:<password>
 // Le SSID s'arrête au premier ':' ; tout le reste est le mot de passe (donc un
 // mot de passe contenant ':' est accepté). Enregistre en NVS puis redémarre en STA.
+static bool applySetWifi(const String& line, Print& out) {
+  if (line.startsWith("SETWIFI:")) {
+    String rest = line.substring(8);       // après "SETWIFI:"
+    int sep = rest.indexOf(':');
+    if (sep > 0) {
+      String ssid = rest.substring(0, sep);
+      String pass = rest.substring(sep + 1);
+      prefs.begin("firenet", false);
+      prefs.putString("ssid", ssid);
+      prefs.putString("pass", pass);
+      prefs.end();
+      DBG.printf("[wifi] SETWIFI OK ssid=\"%s\" -> reboot STA\n", ssid.c_str());
+      if ((Print*)&out != (Print*)&DBG) {
+        out.printf("[wifi] SETWIFI OK ssid=\"%s\" -> reboot STA\r\n", ssid.c_str());
+        out.flush();
+      }
+      delay(200); ESP.restart();
+      return true;
+    } else {
+      DBG.println("[wifi] SETWIFI: format attendu -> SETWIFI:<ssid>:<password>");
+      if ((Print*)&out != (Print*)&DBG) {
+        out.println("[wifi] SETWIFI: format attendu -> SETWIFI:<ssid>:<password>");
+        out.flush();
+      }
+    }
+  }
+  return false;
+}
+
 static void handleSerialProvisioning() {
-  static String line;
+  static String dbgLine;
   while (DBG.available()) {
     char c = (char)DBG.read();
     if (c == '\n' || c == '\r') {
-      if (line.startsWith("SETWIFI:")) {
-        String rest = line.substring(8);       // après "SETWIFI:"
-        int sep = rest.indexOf(':');
-        if (sep > 0) {
-          String ssid = rest.substring(0, sep);
-          String pass = rest.substring(sep + 1);
-          prefs.begin("firenet", false);
-          prefs.putString("ssid", ssid);
-          prefs.putString("pass", pass);
-          prefs.end();
-          DBG.printf("[wifi] SETWIFI OK ssid=\"%s\" -> reboot STA\n", ssid.c_str());
-          delay(200); ESP.restart();
-        } else {
-          DBG.println("[wifi] SETWIFI: format attendu -> SETWIFI:<ssid>:<password>");
+      if (dbgLine.length() > 0) {
+        applySetWifi(dbgLine, DBG);
+        dbgLine = "";
+      }
+    } else if (dbgLine.length() < 160) {
+      dbgLine += c;
+    }
+  }
+
+  static String poeleLine;
+  while (POELE.available()) {
+    uint8_t b = (uint8_t)POELE.read();
+    if (g_link) g_link->onByte(b);
+    char c = (char)b;
+    if (c == '\n' || c == '\r') {
+      if (poeleLine.length() > 0) {
+        applySetWifi(poeleLine, POELE);
+        poeleLine = "";
+      }
+    } else {
+      if (poeleLine.length() == 0) {
+        if (c == 'S') poeleLine += c;
+      } else if (poeleLine.length() < 160) {
+        poeleLine += c;
+        if (poeleLine.length() == 8 && poeleLine != "SETWIFI:") {
+          poeleLine = "";
         }
       }
-      line = "";
-    } else if (line.length() < 160) {
-      line += c;
     }
   }
 }
@@ -1016,11 +1054,10 @@ void loop() {
     dnsServer.processNextRequest();
   }
 
-  // 0b) provisioning série (Option C) : commande SETWIFI:<ssid>:<pass> sur UART0
+  // 0b) provisioning série (Option C) : commande SETWIFI:<ssid>:<pass> sur UART0 (DBG) et CDC TinyUSB (POELE)
   handleSerialProvisioning();
 
-  // 1) drainer le CDC entrant (poêle -> nous)
-  while (POELE.available()) g_link->onByte((uint8_t)POELE.read());
+  // 1) traiter les trames du poêle
   g_link->poll();
 
   // 1b) Watchdog RX : une fois la version acquittée, le poêle répond en continu

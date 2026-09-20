@@ -25,14 +25,18 @@ jobs:
           chmod +x test/build_and_test.sh
           ./test/build_and_test.sh
 
-      - name: Cache Arduino packages
+      - name: Cache Arduino packages and build cache
         uses: actions/cache@v4
         id: arduino-cache
         with:
           path: |
             ~/.arduino15/packages
             ~/.arduino15/cache_root.sha256
-          key: esp32-core-3.3.11-${{ runner.os }}
+            ~/.arduino15/build-cache
+          key: esp32-release-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            esp32-build-${{ runner.os }}-
+            esp32-core-3.3.11-${{ runner.os }}
 
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -86,9 +90,10 @@ jobs:
 
       - name: Compile ESP32-S3 Firmware
         run: |
-          mkdir -p .build
+          mkdir -p .build ~/.arduino15/build-cache
           arduino-cli compile \
             --fqbn esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,FlashSize=4M,PartitionScheme=min_spiffs \
+            --build-cache-path ~/.arduino15/build-cache \
             --output-dir .build \
             open-firenet/open-firenet.ino
 

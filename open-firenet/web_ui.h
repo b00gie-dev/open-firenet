@@ -240,7 +240,7 @@ main { max-width: 960px; margin: 0 auto; padding: 20px; display: flex; flex-dire
   overflow: hidden;
   margin-top: 4px;
 }
-.progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); transition: width 0.5s; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--amber), var(--green)); transition: width 0.5s; }
 
 /* Control Deck */
 .control-deck {
